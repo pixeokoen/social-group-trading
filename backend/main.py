@@ -128,12 +128,35 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Trade Signal Filter & IBKR Execution API", lifespan=lifespan)
 
 # Configure CORS for Vue frontend
+allowed_origins = [
+    "http://localhost:5173",
+    "http://localhost:3000",
+    "http://localhost:4173",  # Vite preview port
+]
+
+# Add FRONTEND_URL from environment if set
+frontend_url = os.getenv("FRONTEND_URL", "").strip()
+if frontend_url:
+    allowed_origins.append(frontend_url)
+    # Also add without trailing slash
+    if frontend_url.endswith("/"):
+        allowed_origins.append(frontend_url[:-1])
+    else:
+        allowed_origins.append(frontend_url + "/")
+
+# Add Render-specific URLs
+allowed_origins.extend([
+    "https://social-group-trading-frontend.onrender.com",
+    "https://*.onrender.com",  # For Render preview deployments
+])
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000", os.getenv("FRONTEND_URL", "")],
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 # Webhook secret for WHAPI
