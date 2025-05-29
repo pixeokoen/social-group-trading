@@ -18,7 +18,8 @@ from models import (
     WHAPIWebhook, SignalApproval, TradeClose, WhatsAppMessage,
     MessageAnalysisRequest, MessageAnalysisResponse,
     Account, AccountCreate, AccountUpdate, UserSession,
-    SignalSource, SignalSourceCreate, SignalSourceUpdate, SourceAccountMapping
+    SignalSource, SignalSourceCreate, SignalSourceUpdate, SourceAccountMapping,
+    UserCreate
 )
 from db import get_db_connection
 from auth import get_current_user, create_access_token, authenticate_user, register
@@ -1238,9 +1239,9 @@ async def login(request: Request):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 @app.post("/api/auth/register")
-async def register_user(username: str, email: str, password: str):
+async def register_user(user_data: UserCreate):
     """Register a new user"""
-    return await register(username, email, password)
+    return await register(user_data.username, user_data.email, user_data.password)
 
 # Account management endpoints
 @app.get("/api/accounts", response_model=List[Account])
