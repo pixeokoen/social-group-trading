@@ -1,0 +1,31 @@
+services:
+  # Backend API with built-in trade sync
+  - type: web
+    name: social-group-trading-backend
+    env: python
+    buildCommand: pip install -r backend/requirements.txt
+    startCommand: cd backend && uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: SECRET_KEY
+        generateValue: true
+      - key: FRONTEND_URL
+        value: https://social-group-trading.onrender.com
+      - key: OPENAI_API_KEY
+        sync: false
+
+  - type: web
+    name: social-group-trading-frontend
+    env: node
+    buildCommand: cd frontend && npm install && npm run build
+    startCommand: cd frontend && npm run preview
+    envVars:
+      - key: VITE_API_URL
+        value: https://social-group-trading-backend.onrender.com
+
+databases:
+  - name: social-trading-db
+    plan: starter  # $7/month, 256MB storage
+    databaseName: social_trading
+    user: trading_user 
