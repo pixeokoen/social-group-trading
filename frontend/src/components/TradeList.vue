@@ -38,19 +38,19 @@
                 v-if="trade.pnl !== null && trade.pnl !== undefined"
                 :class="[
                   'text-sm font-medium',
-                  trade.pnl >= 0 ? 'text-green-600' : 'text-red-600'
+                  (trade.pnl || 0) >= 0 ? 'text-green-600' : 'text-red-600'
                 ]"
               >
-                P&L: {{ trade.pnl >= 0 ? '+' : '' }}${{ trade.pnl.toFixed(2) }}
+                P&L: {{ (trade.pnl || 0) >= 0 ? '+' : '' }}${{ trade.pnl ? Math.abs(trade.pnl).toFixed(2) : '0.00' }}
               </span>
               <span
                 v-else-if="trade.floating_pnl !== null && trade.floating_pnl !== undefined"
                 :class="[
                   'text-sm font-medium',
-                  trade.floating_pnl >= 0 ? 'text-green-600' : 'text-red-600'
+                  (trade.floating_pnl || 0) >= 0 ? 'text-green-600' : 'text-red-600'
                 ]"
               >
-                Float: {{ trade.floating_pnl >= 0 ? '+' : '' }}${{ trade.floating_pnl.toFixed(2) }}
+                Float: {{ (trade.floating_pnl || 0) >= 0 ? '+' : '' }}${{ trade.floating_pnl ? Math.abs(trade.floating_pnl).toFixed(2) : '0.00' }}
               </span>
             </div>
             <button
@@ -136,18 +136,20 @@
               <span
                 v-if="trade.pnl !== null && trade.pnl !== undefined"
                 :class="[
-                  trade.pnl >= 0 ? 'text-green-600' : 'text-red-600'
+                  'font-medium',
+                  (trade.pnl || 0) >= 0 ? 'text-green-600' : 'text-red-600'
                 ]"
               >
-                {{ trade.pnl >= 0 ? '+' : '' }}${{ trade.pnl.toFixed(2) }}
+                {{ (trade.pnl || 0) >= 0 ? '+' : '' }}${{ trade.pnl ? Math.abs(trade.pnl).toFixed(2) : '0.00' }}
               </span>
               <span
                 v-else-if="trade.floating_pnl !== null && trade.floating_pnl !== undefined"
                 :class="[
-                  trade.floating_pnl >= 0 ? 'text-green-600' : 'text-red-600'
+                  'font-medium',
+                  (trade.floating_pnl || 0) >= 0 ? 'text-green-600' : 'text-red-600'
                 ]"
               >
-                {{ trade.floating_pnl >= 0 ? '+' : '' }}${{ trade.floating_pnl.toFixed(2) }}
+                {{ (trade.floating_pnl || 0) >= 0 ? '+' : '' }}${{ trade.floating_pnl ? Math.abs(trade.floating_pnl).toFixed(2) : '0.00' }}
                 <span class="text-xs text-gray-400 ml-1">(Float)</span>
               </span>
               <span v-else class="text-gray-400">-</span>
