@@ -867,7 +867,14 @@ async def get_trades(
             for field in ['quantity', 'entry_price', 'exit_price', 'current_price', 'pnl', 
                           'floating_pnl', 'broker_fill_price', 'stop_loss', 'take_profit']:
                 if field in trade_dict and trade_dict[field] is not None:
-                    trade_dict[field] = float(trade_dict[field])
+                    try:
+                        trade_dict[field] = float(trade_dict[field])
+                    except (ValueError, TypeError):
+                        # If conversion fails, set sensible defaults
+                        if field == 'quantity':
+                            trade_dict[field] = 0.0
+                        else:
+                            trade_dict[field] = None
             
             # Handle potentially missing or null fields with defaults
             trade_dict['broker_order_id'] = trade_dict.get('broker_order_id') or ''
@@ -1225,10 +1232,14 @@ async def get_analytics(current_user: User = Depends(get_current_user)):
                 if trade_dict['action'] not in ['BUY', 'SELL']:
                     trade_dict['action'] = 'BUY'  # Default to BUY
             
-            # Convert Decimal to float
+            # Convert Decimal to float - including quantity which might be stored as text
             for field in ['quantity', 'entry_price', 'current_price', 'floating_pnl', 'pnl']:
                 if trade_dict.get(field) is not None:
-                    trade_dict[field] = float(trade_dict[field])
+                    try:
+                        trade_dict[field] = float(trade_dict[field])
+                    except (ValueError, TypeError):
+                        trade_dict[field] = 0.0 if field == 'quantity' else None
+            
             recent_trades.append(trade_dict)
         
         # Combine results
