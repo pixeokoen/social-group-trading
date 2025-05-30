@@ -25,10 +25,15 @@ services:
     envVars:
       - key: VITE_API_URL
         value: https://social-group-trading-backend.onrender.com
+    headers:
+      - path: /*
+        name: Cache-Control
+        value: no-cache
     routes:
       - type: rewrite
         source: /*
         destination: /index.html
+        priority: 0
 
 databases:
   - name: social-trading-db
