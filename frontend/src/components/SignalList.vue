@@ -78,7 +78,7 @@
           </div>
           
           <div class="flex items-center space-x-2 ml-11 sm:ml-0">
-            <!-- Pending signals - show approve/reject buttons -->
+            <!-- Pending signals - show approve/reject/cancel buttons -->
             <template v-if="signal.status === 'pending'">
               <button
                 @click="$emit('approve', signal)"
@@ -92,15 +92,27 @@
               >
                 Reject
               </button>
+              <button
+                @click="$emit('cancel', signal.id)"
+                class="text-gray-500 hover:text-gray-700"
+              >
+                Cancel
+              </button>
             </template>
             
-            <!-- Approved signals - show execute button -->
+            <!-- Approved signals - show execute and cancel buttons -->
             <template v-else-if="signal.status === 'approved'">
               <button
                 @click="$emit('execute', signal.id)"
                 class="text-green-600 hover:text-green-900"
               >
                 Execute
+              </button>
+              <button
+                @click="$emit('cancel', signal.id)"
+                class="text-gray-500 hover:text-gray-700"
+              >
+                Cancel
               </button>
             </template>
             
@@ -148,5 +160,6 @@ defineEmits<{
   execute: [id: number]
   approve: [signal: Signal]
   reject: [id: number]
+  cancel: [id: number]
 }>()
 </script> 

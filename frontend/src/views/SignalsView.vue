@@ -14,7 +14,7 @@
             Analyze Message
           </button>
           <button
-            @click="showCreateForm = true"
+            @click="showCreateSignalModal"
             class="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-primary-600 hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500"
           >
             <svg class="-ml-1 mr-2 h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -50,108 +50,8 @@
         @approve="approveSignal"
         @reject="rejectSignal"
         @execute="executeSignal"
+        @cancel="cancelSignal"
       />
-      
-      <!-- Create Signal Modal -->
-      <div v-if="showCreateForm" class="fixed z-10 inset-0 overflow-y-auto">
-        <div class="flex items-end justify-center min-h-screen pt-4 px-4 pb-20 text-center sm:block sm:p-0">
-          <div class="fixed inset-0 transition-opacity" @click="showCreateForm = false">
-            <div class="absolute inset-0 bg-gray-500 opacity-75"></div>
-          </div>
-          
-          <div class="inline-block align-bottom bg-white rounded-lg text-left overflow-hidden shadow-xl transform transition-all sm:my-8 sm:align-middle sm:max-w-lg sm:w-full">
-            <form @submit.prevent="createSignal">
-              <div class="bg-white px-4 pt-5 pb-4 sm:p-6 sm:pb-4">
-                <h3 class="text-lg leading-6 font-medium text-gray-900 mb-4">Create Trading Signal</h3>
-                
-                <div class="space-y-4">
-                  <div>
-                    <label class="block text-sm font-medium text-gray-700">Symbol</label>
-                    <input
-                      v-model="newSignal.symbol"
-                      type="text"
-                      required
-                      class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-primary-500 focus:border-primary-500"
-                    />
-                  </div>
-                  
-                  <div>
-                    <label class="block text-sm font-medium text-gray-700">Action</label>
-                    <select
-                      v-model="newSignal.action"
-                      required
-                      class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-primary-500 focus:border-primary-500"
-                    >
-                      <option value="BUY">Buy</option>
-                      <option value="SELL">Sell</option>
-                    </select>
-                  </div>
-                  
-                  <div>
-                    <label class="block text-sm font-medium text-gray-700">Quantity</label>
-                    <input
-                      v-model="newSignal.quantity"
-                      type="number"
-                      min="1"
-                      class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-primary-500 focus:border-primary-500"
-                    />
-                  </div>
-                  
-                  <div>
-                    <label class="block text-sm font-medium text-gray-700">Price (optional)</label>
-                    <input
-                      v-model="newSignal.price"
-                      type="number"
-                      step="0.01"
-                      min="0"
-                      class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-primary-500 focus:border-primary-500"
-                    />
-                  </div>
-                  
-                  <div>
-                    <label class="block text-sm font-medium text-gray-700">Stop Loss (optional)</label>
-                    <input
-                      v-model="newSignal.stop_loss"
-                      type="number"
-                      step="0.01"
-                      min="0"
-                      class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-primary-500 focus:border-primary-500"
-                    />
-                  </div>
-                  
-                  <div>
-                    <label class="block text-sm font-medium text-gray-700">Take Profit (optional)</label>
-                    <input
-                      v-model="newSignal.take_profit"
-                      type="number"
-                      step="0.01"
-                      min="0"
-                      class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-primary-500 focus:border-primary-500"
-                    />
-                  </div>
-                </div>
-              </div>
-              
-              <div class="bg-gray-50 px-4 py-3 sm:px-6 sm:flex sm:flex-row-reverse">
-                <button
-                  type="submit"
-                  :disabled="loading"
-                  class="w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-primary-600 text-base font-medium text-white hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500 sm:ml-3 sm:w-auto sm:text-sm"
-                >
-                  Create Signal
-                </button>
-                <button
-                  type="button"
-                  @click="showCreateForm = false"
-                  class="mt-3 w-full inline-flex justify-center rounded-md border border-gray-300 shadow-sm px-4 py-2 bg-white text-base font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500 sm:mt-0 sm:ml-3 sm:w-auto sm:text-sm"
-                >
-                  Cancel
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      </div>
       
       <!-- Analyze Message Modal -->
       <div v-if="showMessageAnalyzer" class="fixed z-10 inset-0 overflow-y-auto">
@@ -224,7 +124,7 @@
         </div>
       </div>
       
-      <!-- Order Confirmation Modal -->
+      <!-- Order Confirmation Modal (used for both approve and create) -->
       <OrderConfirmModal
         :signal="selectedSignal"
         :is-open="showOrderModal"
@@ -262,7 +162,6 @@ const accountStore = useAccountStore()
 
 const signals = ref<Signal[]>([])
 const filterStatus = ref('all')
-const showCreateForm = ref(false)
 const loading = ref(false)
 const showMessageAnalyzer = ref(false)
 const analyzing = ref(false)
@@ -270,15 +169,6 @@ const messageToAnalyze = ref('')
 const analysisResult = ref<any>(null)
 const selectedSignal = ref<Signal | null>(null)
 const showOrderModal = ref(false)
-
-const newSignal = ref({
-  symbol: '',
-  action: 'BUY',
-  quantity: 100,
-  price: null,
-  stop_loss: null,
-  take_profit: null
-})
 
 const filteredSignals = computed(() => {
   if (filterStatus.value === 'all') {
@@ -296,30 +186,20 @@ const fetchSignals = async () => {
   }
 }
 
-const createSignal = async () => {
-  loading.value = true
-  try {
-    await axios.post('/api/signals', newSignal.value)
-    showCreateForm.value = false
-    newSignal.value = {
-      symbol: '',
-      action: 'BUY',
-      quantity: 100,
-      price: null,
-      stop_loss: null,
-      take_profit: null
-    }
-    await fetchSignals()
-  } catch (error) {
-    console.error('Error creating signal:', error)
-    alert('Failed to create signal')
-  } finally {
-    loading.value = false
+const showCreateSignalModal = () => {
+  selectedSignal.value = {
+    id: 0,
+    symbol: '',
+    action: 'BUY',
+    quantity: 100,
+    status: 'manual_entry',
+    created_at: new Date().toISOString(),
+    source: 'manual_entry'
   }
+  showOrderModal.value = true
 }
 
 const approveSignal = async (signal: Signal) => {
-  // Open order confirmation modal instead of direct approval
   selectedSignal.value = signal
   showOrderModal.value = true
 }
@@ -342,6 +222,17 @@ const executeSignal = async (signalId: number) => {
   } catch (error: any) {
     console.error('Error executing signal:', error)
     alert(error.response?.data?.detail || 'Failed to execute trade')
+  }
+}
+
+const cancelSignal = async (signalId: number) => {
+  if (!confirm('Are you sure you want to cancel/delete this signal?')) return
+  try {
+    await axios.delete(`/api/signals/${signalId}`)
+    await fetchSignals()
+  } catch (error) {
+    console.error('Error cancelling signal:', error)
+    alert('Failed to cancel/delete signal')
   }
 }
 
@@ -375,7 +266,7 @@ const closeOrderModal = () => {
 
 const onOrderExecuted = (result: any) => {
   alert(`Trade executed successfully! Order ID: ${result.broker_order_id}`)
-  fetchSignals() // Refresh signals list
+  fetchSignals()
 }
 
 onMounted(() => {

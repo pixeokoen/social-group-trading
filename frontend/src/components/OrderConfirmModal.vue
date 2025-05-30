@@ -202,7 +202,7 @@
           <!-- Order Preview & Account Info -->
           <div class="space-y-6">
             <!-- Signal Info -->
-            <div v-if="signal" class="bg-gray-50 p-4 rounded-lg">
+            <div v-if="signal && signal.id !== 0" class="bg-gray-50 p-4 rounded-lg">
               <h5 class="text-sm font-medium text-gray-900 mb-2">Original Signal</h5>
               <div class="text-sm text-gray-600 space-y-1">
                 <p><span class="font-medium">Symbol:</span> {{ signal.symbol }}</p>
@@ -213,18 +213,24 @@
               </div>
             </div>
             
+            <!-- Manual Trade Indicator -->
+            <div v-if="signal && signal.id === 0" class="bg-purple-50 p-4 rounded-lg">
+              <h5 class="text-sm font-medium text-purple-900 mb-2">Manual Trade Entry</h5>
+              <p class="text-sm text-purple-700">Creating a new manual trade order</p>
+            </div>
+            
             <!-- Market Data -->
-            <div v-if="validationResult?.market_data" class="bg-blue-50 p-4 rounded-lg">
+            <div v-if="marketData" class="bg-blue-50 p-4 rounded-lg">
               <h5 class="text-sm font-medium text-gray-900 mb-2">Market Data</h5>
               <div class="text-sm text-gray-600 space-y-1">
-                <p><span class="font-medium">Bid:</span> ${{ validationResult.market_data.bid?.toFixed(2) }}</p>
-                <p><span class="font-medium">Ask:</span> ${{ validationResult.market_data.ask?.toFixed(2) }}</p>
-                <p><span class="font-medium">Last:</span> ${{ validationResult.market_data.last?.toFixed(2) }}</p>
+                <p><span class="font-medium">Bid:</span> ${{ marketData.bid?.toFixed(2) }}</p>
+                <p><span class="font-medium">Ask:</span> ${{ marketData.ask?.toFixed(2) }}</p>
+                <p><span class="font-medium">Last:</span> ${{ marketData.last?.toFixed(2) }}</p>
               </div>
             </div>
             
             <!-- Order Summary -->
-            <div v-if="orderPreview" class="bg-green-50 p-4 rounded-lg">
+            <div v-if="orderPreview && (orderForm.order_type !== 'LIMIT' || orderForm.limit_price)" class="bg-green-50 p-4 rounded-lg">
               <h5 class="text-sm font-medium text-gray-900 mb-2">Order Summary</h5>
               <div class="text-sm text-gray-600 space-y-1">
                 <p><span class="font-medium">Estimated Quantity:</span> {{ formatQuantity(orderPreview.estimated_quantity) }}</p>
@@ -283,10 +289,10 @@
           </button>
           <button
             @click="executeOrder"
-            :disabled="!validationResult?.valid || executing"
+            :disabled="!canExecute || executing"
             class="px-4 py-2 bg-primary-600 text-white rounded-md hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {{ executing ? 'Executing...' : 'Execute Order' }}
+            {{ executing ? 'Executing...' : isNewSignal ? 'Create & Execute' : 'Execute Order' }}
           </button>
         </div>
       </div>
@@ -333,9 +339,24 @@ const orderForm = ref({
 const validating = ref(false)
 const executing = ref(false)
 const validationResult = ref<any>(null)
-const marketData = computed(() => validationResult.value?.market_data)
+const marketDataRaw = ref<any>(null)
+
+const marketData = computed(() => {
+  // Prefer validationResult market_data if present, else fallback to independently fetched market data
+  return validationResult.value?.market_data || marketDataRaw.value
+})
+
 const canTradeFractional = computed(() => {
   return marketData.value?.fractionable && validationResult.value?.account_info?.fractional_trading_enabled
+})
+const isNewSignal = computed(() => props.signal?.id === 0)
+const canExecute = computed(() => {
+  if (isNewSignal.value) {
+    // For new signals, just check that we have a valid symbol and quantity
+    return orderForm.value.symbol && orderForm.value.quantity > 0
+  }
+  // For existing signals, check validation result
+  return validationResult.value?.valid
 })
 
 // Compute a local order preview for immediate feedback
@@ -464,6 +485,12 @@ const calculateDollarsFromQuantity = () => {
 const validateOrder = async () => {
   if (!props.signal || validating.value) return
   
+  // For new signals, skip validation API call if no symbol
+  if (isNewSignal.value && !orderForm.value.symbol) {
+    validationResult.value = { valid: false, errors: ['Symbol is required'] }
+    return
+  }
+  
   // Clear any pending validation timer
   clearTimeout(validationTimer)
   
@@ -486,7 +513,15 @@ const validateOrder = async () => {
       time_in_force: orderForm.value.time_in_force
     }
     
-    const response = await axios.post(`/api/signals/${props.signal.id}/validate-order`, orderParams)
+    // For new signals, we need to validate differently
+    let response
+    if (isNewSignal.value) {
+      // Create a temporary validation endpoint that doesn't require signal ID
+      response = await axios.post('/api/signals/validate-market-order', orderParams)
+    } else {
+      response = await axios.post(`/api/signals/${props.signal.id}/validate-order`, orderParams)
+    }
+    
     validationResult.value = response.data
     
     // Now that we have market data, calculate the correct quantity if in dollar mode
@@ -533,25 +568,42 @@ const validateOrder = async () => {
 }
 
 const executeOrder = async () => {
-  if (!props.signal || !validationResult.value?.valid) return
-  
+  if (!props.signal) return
   executing.value = true
   try {
-    // First approve the signal
-    await axios.post(`/api/signals/${props.signal.id}/approve`, {
-      approved: true
-    })
-    
-    // Then execute the trade with the correct quantity (always in shares)
-    const response = await axios.post(`/api/trades/execute/${props.signal.id}`, {
-      quantity: orderForm.value.quantity, // This is always the share quantity
-      order_type: orderForm.value.order_type,
-      limit_price: orderForm.value.limit_price,
-      time_in_force: orderForm.value.time_in_force
-    })
-    
-    emit('executed', response.data)
-    close()
+    if (isNewSignal.value) {
+      // 1. Create the signal (should be 'pending')
+      const signalData = {
+        symbol: orderForm.value.symbol,
+        action: orderForm.value.action,
+        quantity: orderForm.value.quantity,
+        price: orderForm.value.order_type === 'LIMIT' ? orderForm.value.limit_price : null
+      }
+      const signalResponse = await axios.post('/api/signals', signalData)
+      const newSignalId = signalResponse.data.id
+      // 2. Approve the signal
+      await axios.post(`/api/signals/${newSignalId}/approve`, { approved: true })
+      // 3. Execute the trade
+      const response = await axios.post(`/api/trades/execute/${newSignalId}`, {
+        quantity: orderForm.value.quantity,
+        order_type: orderForm.value.order_type,
+        limit_price: orderForm.value.limit_price,
+        time_in_force: orderForm.value.time_in_force
+      })
+      emit('executed', response.data)
+      close()
+    } else {
+      // Existing flow for already created signals
+      await axios.post(`/api/signals/${props.signal.id}/approve`, { approved: true })
+      const response = await axios.post(`/api/trades/execute/${props.signal.id}`, {
+        quantity: orderForm.value.quantity,
+        order_type: orderForm.value.order_type,
+        limit_price: orderForm.value.limit_price,
+        time_in_force: orderForm.value.time_in_force
+      })
+      emit('executed', response.data)
+      close()
+    }
   } catch (error: any) {
     console.error('Error executing order:', error)
     alert(error.response?.data?.detail || 'Failed to execute order')
@@ -583,4 +635,23 @@ const formatQuantity = (quantity: number) => {
     return quantity.toFixed(4)
   }
 }
+
+// Fetch market data independently
+const fetchMarketData = async (symbol: string) => {
+  if (!symbol) {
+    marketDataRaw.value = null
+    return
+  }
+  try {
+    const response = await axios.get(`/api/market-data/${symbol}`)
+    marketDataRaw.value = response.data
+  } catch (error) {
+    marketDataRaw.value = null
+  }
+}
+
+// Watch symbol changes to fetch market data
+watch(() => orderForm.value.symbol, (newSymbol) => {
+  fetchMarketData(newSymbol)
+})
 </script> 

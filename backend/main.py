@@ -558,7 +558,7 @@ async def create_signal(
     account = await get_active_account(current_user)
     if not account:
         raise HTTPException(status_code=400, detail="No active trading account")
-        
+    
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
@@ -567,7 +567,7 @@ async def create_signal(
                 user_id, account_id, symbol, action, quantity, price, 
                 stop_loss, take_profit, source, status
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'manual_entry', 'approved')
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'manual_entry', 'pending')
             RETURNING *
         """, (
             current_user.id, account.id, signal.symbol, signal.action, signal.quantity,
@@ -742,6 +742,88 @@ async def validate_order(
         
     finally:
         conn.close()
+
+@app.post("/api/signals/validate-market-order")
+async def validate_market_order(
+    order_params: Dict[str, Any],
+    current_user: User = Depends(get_current_user)
+):
+    """Validate a market order without requiring a signal ID"""
+    # Get active account
+    account = await get_active_account(current_user)
+    if not account:
+        raise HTTPException(status_code=400, detail="No active trading account")
+    
+    # Get broker client
+    broker_client = get_broker_client(account)
+    if not broker_client:
+        raise HTTPException(status_code=400, detail="Failed to initialize broker client")
+    
+    # Extract order parameters
+    symbol = order_params.get('symbol', '').upper()
+    action = order_params.get('action', 'BUY').upper()
+    quantity = float(order_params.get('quantity', 0))
+    order_type = order_params.get('order_type', 'MARKET').upper()
+    limit_price = order_params.get('limit_price')
+    
+    errors = []
+    warnings = []
+    
+    # Basic validation
+    if not symbol:
+        errors.append("Symbol is required")
+    if quantity <= 0:
+        errors.append("Quantity must be greater than 0")
+    if order_type == 'LIMIT' and not limit_price:
+        errors.append("Limit price is required for limit orders")
+    
+    # Get market data
+    market_data = None
+    if symbol and not errors:
+        try:
+            market_data = await broker_client.get_market_data(symbol)
+            if not market_data:
+                errors.append(f"Could not fetch market data for {symbol}")
+        except Exception as e:
+            errors.append(f"Error fetching market data: {str(e)}")
+    
+    # Get account info
+    account_info = None
+    try:
+        account_info = await broker_client.get_account_info()
+    except Exception as e:
+        warnings.append(f"Could not fetch account info: {str(e)}")
+    
+    # Calculate order preview
+    order_preview = None
+    if market_data and not errors:
+        if order_type == 'MARKET':
+            estimated_price = market_data['ask'] if action == 'BUY' else market_data['bid']
+        else:
+            estimated_price = float(limit_price)
+        
+        estimated_cost = quantity * estimated_price
+        
+        order_preview = {
+            'estimated_quantity': quantity,
+            'estimated_price': estimated_price,
+            'estimated_cost': estimated_cost
+        }
+        
+        # Check buying power
+        if account_info and action == 'BUY':
+            buying_power = account_info.get('buying_power', 0)
+            if estimated_cost > buying_power:
+                errors.append(f"Insufficient buying power. Required: ${estimated_cost:.2f}, Available: ${buying_power:.2f}")
+    
+    return {
+        'valid': len(errors) == 0,
+        'errors': errors,
+        'warnings': warnings,
+        'market_data': market_data,
+        'account_info': account_info,
+        'order_preview': order_preview
+    }
 
 @app.post("/api/signals/analyze", response_model=MessageAnalysisResponse)
 async def analyze_message(
@@ -1794,118 +1876,136 @@ async def sync_trades_with_broker(current_user: User = Depends(get_current_user)
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
-        
-        # Get all pending trades for this account
-        cursor.execute("""
-            SELECT id, broker_order_id, symbol, quantity, action
-            FROM trades 
-            WHERE user_id = %s AND account_id = %s 
-            AND status IN ('pending', 'open')
-            AND broker_order_id IS NOT NULL
-        """, (current_user.id, account.id))
-        
-        pending_trades = cursor.fetchall()
+        all_orders = await broker_client.get_orders(status='all', limit=500)
+        print(f"Fetched {len(all_orders)} orders from Alpaca")  # <-- LOG TO BACKEND CONSOLE
+        order_ids = [str(order['id']) for order in all_orders]
+        imported_count = 0
         updated_count = 0
         
-        for trade in pending_trades:
-            trade_id, order_id, symbol, quantity, action = trade
-            
-            try:
-                # Get order status from Alpaca
-                order_status = await broker_client.get_order_status(order_id)
-                
-                if order_status:
-                    alpaca_status = order_status['status']
-                    
-                    # Map Alpaca status to our status
-                    if alpaca_status == 'filled':
-                        # Update trade with fill information
-                        cursor.execute("""
-                            UPDATE trades 
-                            SET status = 'open',
-                                broker_fill_price = %s,
-                                entry_price = %s,
-                                opened_at = %s
-                            WHERE id = %s
-                        """, (
-                            float(order_status.get('filled_avg_price', 0)),
-                            float(order_status.get('filled_avg_price', 0)),
-                            order_status.get('filled_at'),
-                            trade_id
-                        ))
-                        updated_count += 1
-                        
-                    elif alpaca_status == 'partially_filled':
-                        # Update with partial fill info
-                        filled_qty = order_status.get('filled_qty', 0)
-                        cursor.execute("""
-                            UPDATE trades 
-                            SET status = 'open',
-                                broker_fill_price = %s,
-                                entry_price = %s,
-                                quantity = %s,
-                                opened_at = %s
-                            WHERE id = %s
-                        """, (
-                            float(order_status.get('filled_avg_price', 0)),
-                            float(order_status.get('filled_avg_price', 0)),
-                            filled_qty,
-                            order_status.get('filled_at'),
-                            trade_id
-                        ))
-                        updated_count += 1
-                        
-                    elif alpaca_status in ['canceled', 'expired', 'rejected']:
-                        # Mark trade as cancelled
-                        cursor.execute("""
-                            UPDATE trades 
-                            SET status = 'cancelled',
-                                close_reason = %s
-                            WHERE id = %s
-                        """, (f"Order {alpaca_status}", trade_id))
-                        updated_count += 1
-                        
-            except Exception as e:
-                print(f"Error syncing trade {trade_id}: {e}")
-                # Continue with other trades
-                continue
+        # Fetch all open positions from Alpaca
+        positions = await broker_client.get_positions()
+        # Build a symbol -> position map for quick lookup
+        position_map = {pos['symbol']: pos for pos in positions}
         
-        # Also sync current positions from Alpaca
-        try:
-            positions = await broker_client.get_positions()
-            
-            # Update current prices for open trades
-            for position in positions:
-                current_price = float(position.get('current_price', 0))
+        for order in all_orders:
+            broker_order_id = str(order['id'])
+            # Check if we have this order
+            cursor.execute("""
+                SELECT id, entry_price, quantity, action, status, symbol FROM trades 
+                WHERE broker_order_id = %s
+            """, (broker_order_id,))
+            existing_trade = cursor.fetchone()
+            # Map Alpaca status to our status
+            alpaca_status = order['status']
+            our_status = 'pending'
+            if alpaca_status == 'filled':
+                our_status = 'open'
+            elif alpaca_status in ['canceled', 'cancelled', 'expired', 'rejected']:
+                our_status = 'cancelled'
+            elif alpaca_status == 'partially_filled':
+                our_status = 'open'
+            # Determine closed_at and close_reason
+            closed_at = order.get('canceled_at') or order.get('updated_at') if our_status == 'cancelled' else None
+            close_reason = None
+            if our_status == 'cancelled':
+                if alpaca_status in ['canceled', 'cancelled']:
+                    close_reason = 'Order cancelled'
+                elif alpaca_status == 'expired':
+                    close_reason = 'Order expired'
+                elif alpaca_status == 'rejected':
+                    close_reason = 'Order rejected by broker'
+            pnl = None
+            floating_pnl = None
+            if existing_trade:
+                trade_id, entry_price, quantity, action, db_status, symbol = existing_trade
+                current_price = None
+                # Always try to get the latest price for open trades
+                if our_status == 'open':
+                    if symbol in position_map:
+                        current_price = float(position_map[symbol].get('current_price', 0))
+                    else:
+                        # Fallback: get market data if no position (e.g. just opened)
+                        market_data = await broker_client.get_market_data(symbol)
+                        current_price = float(market_data.get('last', 0))
+                    # Calculate floating P&L for open trades
+                    if entry_price is not None and quantity is not None:
+                        try:
+                            floating_pnl = (current_price - float(entry_price)) * float(quantity) if action == 'BUY' else (float(entry_price) - current_price) * float(quantity)
+                        except Exception:
+                            floating_pnl = 0
+                else:
+                    current_price = float(order.get('filled_avg_price') or order.get('limit_price') or 0)
+                # Update all relevant fields
                 cursor.execute("""
                     UPDATE trades 
-                    SET current_price = %s,
-                        floating_pnl = CASE 
-                            WHEN action = 'BUY' THEN ((%s - entry_price) * quantity)
-                            ELSE ((entry_price - %s) * quantity)
-                        END
-                    WHERE symbol = %s 
-                    AND user_id = %s 
-                    AND account_id = %s 
-                    AND status = 'open'
+                    SET status = %s,
+                        symbol = %s,
+                        action = %s,
+                        quantity = %s,
+                        entry_price = %s,
+                        broker_fill_price = %s,
+                        opened_at = %s,
+                        current_price = %s,
+                        pnl = %s,
+                        floating_pnl = %s,
+                        closed_at = %s,
+                        close_reason = %s
+                    WHERE broker_order_id = %s
                 """, (
+                    our_status,
+                    order['symbol'],
+                    order['side'].upper(),
+                    float(order.get('filled_qty') or order.get('qty', 0)),
+                    float(order.get('filled_avg_price') or order.get('limit_price') or 0),
+                    float(order.get('filled_avg_price') or 0),
+                    order.get('filled_at') or order.get('updated_at'),
                     current_price,
-                    current_price,
-                    current_price,
-                    position['symbol'],
-                    current_user.id,
-                    account.id
+                    pnl,
+                    floating_pnl,
+                    closed_at,
+                    close_reason,
+                    broker_order_id
                 ))
-        except Exception as e:
-            print(f"Error syncing positions: {e}")
-            positions = []
+                updated_count += 1
+            else:
+                # Insert new trade (same as before)
+                current_price = float(order.get('filled_avg_price') or order.get('limit_price') or 0)
+                cursor.execute("""
+                    INSERT INTO trades (
+                        user_id, account_id, symbol, action, quantity,
+                        entry_price, broker_fill_price, status,
+                        broker_order_id, created_at, opened_at,
+                        current_price, pnl, floating_pnl, closed_at, close_reason
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """, (
+                    current_user.id,
+                    account.id,
+                    order['symbol'],
+                    order['side'].upper(),
+                    float(order.get('filled_qty') or order.get('qty', 0)),
+                    float(order.get('filled_avg_price') or order.get('limit_price') or 0),
+                    float(order.get('filled_avg_price') or 0),
+                    our_status,
+                    broker_order_id,
+                    order.get('created_at'),
+                    order.get('filled_at') if our_status == 'open' else None,
+                    current_price,
+                    pnl,
+                    floating_pnl,
+                    closed_at,
+                    close_reason
+                ))
+                imported_count += 1
         
         conn.commit()
         
         return {
             "message": "Sync completed",
-            "trades_updated": updated_count,
-            "positions_synced": len(positions)
+            "total_orders": len(all_orders),
+            "imported": imported_count,
+            "updated": updated_count,
+            "alpaca_order_ids": order_ids  # <-- RETURN TO FRONTEND
         }
         
     except Exception as e:
@@ -2109,6 +2209,41 @@ async def mark_notification_read(
         
         return {"message": "Notification marked as read"}
         
+    finally:
+        conn.close()
+
+@app.get("/api/market-data/{symbol}")
+async def get_market_data(symbol: str, current_user: User = Depends(get_current_user)):
+    """Get current market data for a symbol from Alpaca"""
+    account = await get_active_account(current_user)
+    if not account:
+        raise HTTPException(status_code=400, detail="No active trading account")
+    broker_client = get_broker_client(account)
+    if not broker_client:
+        raise HTTPException(status_code=400, detail="Failed to initialize broker client")
+    data = await broker_client.get_market_data(symbol)
+    return data
+
+@app.delete("/api/signals/{signal_id}")
+async def delete_signal(signal_id: int, current_user: User = Depends(get_current_user)):
+    """Delete/cancel a signal if it is pending or approved and belongs to the user/account."""
+    account = await get_active_account(current_user)
+    if not account:
+        raise HTTPException(status_code=400, detail="No active trading account")
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        # Only allow deleting signals that are pending or approved and belong to the user/account
+        cursor.execute("""
+            DELETE FROM signals
+            WHERE id = %s AND (status = 'pending' OR status = 'approved') AND (user_id = %s OR account_id = %s)
+            RETURNING id
+        """, (signal_id, current_user.id, account.id))
+        deleted = cursor.fetchone()
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Signal not found or cannot be deleted")
+        conn.commit()
+        return {"message": "Signal deleted"}
     finally:
         conn.close()
 

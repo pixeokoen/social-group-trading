@@ -92,7 +92,7 @@
               'mt-1 text-3xl font-semibold',
               analytics.total_floating_pnl >= 0 ? 'text-green-600' : 'text-red-600'
             ]">
-              ${{ formatNumber(analytics.total_floating_pnl) }}
+              {{ analytics.total_floating_pnl < 0 ? '-' : '' }}${{ formatNumber(Math.abs(analytics.total_floating_pnl)) }}
             </dd>
             <dd class="mt-1 text-sm text-gray-500">
               Open positions

@@ -227,12 +227,14 @@ const syncTrades = async () => {
   try {
     const response = await axios.get('/api/trades/sync')
     console.log('Sync result:', response.data)
+    // Log the number of Alpaca orders and their IDs
+    console.log('Alpaca orders fetched:', response.data.total_orders)
+    console.log('Alpaca order IDs:', response.data.alpaca_order_ids)
     lastSync.value = new Date()
     
     // Refresh trades after sync
     await fetchTrades()
     
-    // Don't show alert - just log it
     if (response.data.trades_updated > 0) {
       console.log(`Synced ${response.data.trades_updated} trades with broker`)
     }
