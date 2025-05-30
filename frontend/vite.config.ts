@@ -29,4 +29,6 @@ export default defineConfig({
       },
     },
   },
+  // Ensure static.json is copied to dist
+  publicDir: 'public',
 }) 
