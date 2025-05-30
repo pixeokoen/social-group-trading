@@ -105,7 +105,7 @@ class Signal(SignalBase):
 class TradeBase(BaseModel):
     symbol: str
     action: Literal["BUY", "SELL"]
-    quantity: int
+    quantity: Decimal
     entry_price: Decimal
 
 class TradeCreate(TradeBase):

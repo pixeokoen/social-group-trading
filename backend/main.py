@@ -849,7 +849,7 @@ async def get_trades(
             trade_dict = dict(zip([desc[0] for desc in cursor.description], trade))
             
             # Convert Decimal to float for JSON serialization
-            for field in ['entry_price', 'exit_price', 'current_price', 'pnl', 
+            for field in ['quantity', 'entry_price', 'exit_price', 'current_price', 'pnl', 
                           'floating_pnl', 'broker_fill_price']:
                 if field in trade_dict and trade_dict[field] is not None:
                     trade_dict[field] = float(trade_dict[field])
