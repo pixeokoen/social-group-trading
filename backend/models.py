@@ -118,6 +118,8 @@ class Trade(TradeBase):
     signal_id: Optional[int] = None
     exit_price: Optional[Decimal] = None
     current_price: Optional[Decimal] = None
+    stop_loss: Optional[Decimal] = None
+    take_profit: Optional[Decimal] = None
     pnl: Optional[Decimal] = None
     floating_pnl: Optional[Decimal] = None
     status: Literal["pending", "open", "closed", "cancelled"] = "pending"

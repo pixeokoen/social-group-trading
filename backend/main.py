@@ -848,17 +848,31 @@ async def get_trades(
         for trade in trades:
             trade_dict = dict(zip([desc[0] for desc in cursor.description], trade))
             
-            # Normalize action field
+            # Normalize action field to uppercase
             if 'action' in trade_dict and trade_dict['action']:
                 trade_dict['action'] = trade_dict['action'].upper()
+                # Handle any variations
                 if trade_dict['action'] not in ['BUY', 'SELL']:
-                    trade_dict['action'] = 'BUY'  # Default to BUY
+                    # Try to map common variations
+                    if trade_dict['action'] in ['LONG', 'BTO', 'BUY_TO_OPEN']:
+                        trade_dict['action'] = 'BUY'
+                    elif trade_dict['action'] in ['SHORT', 'STO', 'SELL_TO_OPEN', 'STC', 'SELL_TO_CLOSE']:
+                        trade_dict['action'] = 'SELL'
+                    else:
+                        # Default to BUY if we can't determine
+                        print(f"Warning: Unknown action '{trade_dict['action']}' for trade {trade_dict.get('id', 'unknown')}, defaulting to BUY")
+                        trade_dict['action'] = 'BUY'
             
             # Convert Decimal to float for JSON serialization
             for field in ['quantity', 'entry_price', 'exit_price', 'current_price', 'pnl', 
-                          'floating_pnl', 'broker_fill_price']:
+                          'floating_pnl', 'broker_fill_price', 'stop_loss', 'take_profit']:
                 if field in trade_dict and trade_dict[field] is not None:
                     trade_dict[field] = float(trade_dict[field])
+            
+            # Handle potentially missing or null fields with defaults
+            trade_dict['broker_order_id'] = trade_dict.get('broker_order_id') or ''
+            trade_dict['signal_id'] = trade_dict.get('signal_id')
+            trade_dict['close_reason'] = trade_dict.get('close_reason') or ''
             
             trades_list.append(Trade(**trade_dict))
         
