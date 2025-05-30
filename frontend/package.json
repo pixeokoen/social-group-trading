@@ -6,14 +6,16 @@
   "scripts": {
     "dev": "vite",
     "build": "node node_modules/vite/bin/vite.js build && cp public/_redirects dist/_redirects",
-    "preview": "node node_modules/vite/bin/vite.js preview --port ${PORT:-4173} --host"
+    "preview": "node node_modules/vite/bin/vite.js preview --port ${PORT:-4173} --host",
+    "start": "node server.js"
   },
   "dependencies": {
     "vue": "^3.4.0",
     "vue-router": "^4.2.5",
     "pinia": "^2.1.7",
     "axios": "^1.6.2",
-    "@heroicons/vue": "^2.0.18"
+    "@heroicons/vue": "^2.0.18",
+    "express": "^4.18.2"
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "^4.5.0",
