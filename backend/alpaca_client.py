@@ -150,6 +150,40 @@ class AlpacaClient:
             print(f"Error getting order status: {e}")
             return None
     
+    async def get_orders(self, status: str = 'all', limit: int = 100) -> List[Dict[str, Any]]:
+        """Get orders from Alpaca"""
+        try:
+            # Use string status values as required by Alpaca API
+            request = GetOrdersRequest(
+                status=status,  # 'all', 'open', or 'closed'
+                limit=limit
+            )
+            orders = self.trading_client.get_orders(filter=request)
+            return [
+                {
+                    "id": str(order.id),
+                    "status": order.status.value,
+                    "symbol": order.symbol,
+                    "qty": float(order.qty) if order.qty else 0,
+                    "filled_qty": float(order.filled_qty) if order.filled_qty else 0,
+                    "side": order.side.value,
+                    "order_type": order.order_type.value,
+                    "limit_price": float(order.limit_price) if order.limit_price else None,
+                    "filled_avg_price": float(order.filled_avg_price) if order.filled_avg_price else None,
+                    "created_at": str(order.created_at) if order.created_at else None,
+                    "updated_at": str(order.updated_at) if order.updated_at else None,
+                    "submitted_at": str(order.submitted_at) if order.submitted_at else None,
+                    "filled_at": str(order.filled_at) if order.filled_at else None,
+                    "canceled_at": str(order.canceled_at) if order.canceled_at else None
+                }
+                for order in orders
+            ]
+        except Exception as e:
+            print(f"Error getting orders: {e}")
+            import traceback
+            traceback.print_exc()
+            return []
+    
     async def cancel_order(self, order_id: str) -> bool:
         """Cancel an order"""
         try:
