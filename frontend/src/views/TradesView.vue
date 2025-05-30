@@ -191,8 +191,11 @@ const streamConnected = ref(false)
 let syncInterval: any = null
 let notificationInterval: any = null
 
-const formatQuantity = (quantity: number) => {
-  return quantity === Math.floor(quantity) ? quantity.toString() : quantity.toFixed(4)
+const formatQuantity = (quantity: number | string) => {
+  // Convert to number if it's a string
+  const numQuantity = typeof quantity === 'string' ? parseFloat(quantity) : quantity
+  if (isNaN(numQuantity)) return '0'
+  return numQuantity === Math.floor(numQuantity) ? numQuantity.toString() : numQuantity.toFixed(4)
 }
 
 const formatPrice = (price: any) => {
