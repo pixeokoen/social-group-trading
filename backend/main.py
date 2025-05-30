@@ -848,6 +848,12 @@ async def get_trades(
         for trade in trades:
             trade_dict = dict(zip([desc[0] for desc in cursor.description], trade))
             
+            # Normalize action field
+            if 'action' in trade_dict and trade_dict['action']:
+                trade_dict['action'] = trade_dict['action'].upper()
+                if trade_dict['action'] not in ['BUY', 'SELL']:
+                    trade_dict['action'] = 'BUY'  # Default to BUY
+            
             # Convert Decimal to float for JSON serialization
             for field in ['quantity', 'entry_price', 'exit_price', 'current_price', 'pnl', 
                           'floating_pnl', 'broker_fill_price']:
@@ -1198,8 +1204,15 @@ async def get_analytics(current_user: User = Depends(get_current_user)):
         recent_trades = []
         for row in cursor.fetchall():
             trade_dict = dict(zip([desc[0] for desc in cursor.description], row))
+            
+            # Normalize action field
+            if 'action' in trade_dict and trade_dict['action']:
+                trade_dict['action'] = trade_dict['action'].upper()
+                if trade_dict['action'] not in ['BUY', 'SELL']:
+                    trade_dict['action'] = 'BUY'  # Default to BUY
+            
             # Convert Decimal to float
-            for field in ['entry_price', 'current_price', 'floating_pnl', 'pnl']:
+            for field in ['quantity', 'entry_price', 'current_price', 'floating_pnl', 'pnl']:
                 if trade_dict.get(field) is not None:
                     trade_dict[field] = float(trade_dict[field])
             recent_trades.append(trade_dict)
