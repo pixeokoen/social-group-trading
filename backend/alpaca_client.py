@@ -31,6 +31,9 @@ class AlpacaClient:
         if not self.api_key or not self.api_secret:
             raise ValueError("Alpaca API credentials not provided")
         
+        # Log initialization details
+        print(f"[AlpacaClient] Initializing - Paper: {paper}, Base URL Override: {base_url}")
+        
         # Initialize trading client
         self.trading_client = TradingClient(
             api_key=self.api_key,
@@ -50,6 +53,7 @@ class AlpacaClient:
     async def get_account_info(self) -> Dict[str, Any]:
         """Get account information"""
         try:
+            print(f"[AlpacaClient] Getting account info - Paper: {self.paper}, Base URL: {self.trading_client._base_url if hasattr(self.trading_client, '_base_url') else 'default'}")
             account = self.trading_client.get_account()
             return {
                 "buying_power": float(account.buying_power),
@@ -64,7 +68,10 @@ class AlpacaClient:
                 "fractional_trading": True  # Alpaca supports fractional trading by default for eligible stocks
             }
         except Exception as e:
-            print(f"Error getting account info: {e}")
+            import traceback
+            print(f"[AlpacaClient] Error getting account info: {e}")
+            print(f"[AlpacaClient] Error type: {type(e).__name__}")
+            print(f"[AlpacaClient] Traceback: {traceback.format_exc()}")
             return {}
     
     async def place_order(self, symbol: str, action: str, quantity: float, 

@@ -237,10 +237,16 @@ async def get_active_account(user: User) -> Optional[Account]:
 def get_broker_client(account: Account) -> Optional[AlpacaClient]:
     """Get broker client for the account"""
     if account.broker == "alpaca":
+        # Don't override URL if it's one of the standard Alpaca URLs
+        # Let the SDK handle URL selection based on paper flag
+        url_override = account.base_url
+        if url_override in ["https://api.alpaca.markets", "https://paper-api.alpaca.markets", None, ""]:
+            url_override = None
+            
         return AlpacaClient(
             api_key=account.api_key,
             api_secret=account.api_secret,
-            base_url=account.base_url,
+            base_url=url_override,
             paper=(account.account_type == "paper")
         )
     # Add other brokers here in the future
