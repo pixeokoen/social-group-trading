@@ -53,8 +53,12 @@ class AlpacaClient:
     async def get_account_info(self) -> Dict[str, Any]:
         """Get account information"""
         try:
-            print(f"[AlpacaClient] Getting account info - Paper: {self.paper}, Base URL: {self.trading_client._base_url if hasattr(self.trading_client, '_base_url') else 'default'}")
+            print(f"[AlpacaClient] Getting account info - Paper: {self.paper}, Base URL Override: {self.trading_client._base_url if hasattr(self.trading_client, '_base_url') else 'default'}")
             account = self.trading_client.get_account()
+            
+            # Log successful response for debugging
+            print(f"[AlpacaClient] Successfully retrieved account info for {account.account_number if hasattr(account, 'account_number') else 'unknown'}")
+            
             return {
                 "buying_power": float(account.buying_power),
                 "cash": float(account.cash),
@@ -72,6 +76,20 @@ class AlpacaClient:
             print(f"[AlpacaClient] Error getting account info: {e}")
             print(f"[AlpacaClient] Error type: {type(e).__name__}")
             print(f"[AlpacaClient] Traceback: {traceback.format_exc()}")
+            
+            # Try to extract error details from the exception
+            error_details = {}
+            if hasattr(e, 'status_code'):
+                error_details['status_code'] = e.status_code
+            if hasattr(e, 'response'):
+                try:
+                    error_details['response_text'] = e.response.text if hasattr(e.response, 'text') else str(e.response)
+                except:
+                    pass
+            
+            print(f"[AlpacaClient] Error details: {error_details}")
+            
+            # Return empty dict but log the specific error
             return {}
     
     async def place_order(self, symbol: str, action: str, quantity: float, 
