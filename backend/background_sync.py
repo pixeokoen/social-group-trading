@@ -35,7 +35,7 @@ async def sync_account_trades(account_id: int, api_key: str, api_secret: str, ac
     # Initialize Alpaca client for this account
     client = AlpacaClient(
         api_key=api_key,
-        api_secret=api_secret,
+        secret_key=api_secret,
         paper=(account_type == 'paper')
     )
     

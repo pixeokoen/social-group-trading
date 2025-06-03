@@ -375,6 +375,9 @@ onMounted(() => {
   
   // Check notifications immediately
   checkNotifications()
+  
+  // Listen for account switches
+  window.addEventListener('account-switched', fetchTrades)
 })
 
 onUnmounted(() => {
@@ -384,5 +387,8 @@ onUnmounted(() => {
   if (notificationInterval) {
     clearInterval(notificationInterval)
   }
+  
+  // Clean up event listener
+  window.removeEventListener('account-switched', fetchTrades)
 })
 </script> 

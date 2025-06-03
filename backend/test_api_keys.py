@@ -37,7 +37,7 @@ def test_api_keys_direct():
         # Create client
         client = TradingClient(
             api_key=api_key,
-            api_secret=api_secret,
+            secret_key=api_secret,
             paper=(account_type == 'paper')
         )
         

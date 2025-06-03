@@ -132,6 +132,9 @@
     <main>
       <router-view />
     </main>
+
+    <!-- Error Display Component -->
+    <ErrorDisplay />
   </div>
 </template>
 
@@ -140,6 +143,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useAccountStore } from '@/stores/account'
+import ErrorDisplay from '@/components/ErrorDisplay.vue'
 
 const router = useRouter()
 const authStore = useAuthStore()
@@ -158,8 +162,8 @@ const switchAccount = async (accountId: number) => {
   showAccountDropdown.value = false
   try {
     await accountStore.activateAccount(accountId)
-    // Refresh the current page to reload data with new account
-    router.go(0)
+    // Emit an event that components can listen to for account changes
+    window.dispatchEvent(new CustomEvent('account-switched', { detail: { accountId } }))
   } catch (error) {
     console.error('Error switching account:', error)
   }

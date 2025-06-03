@@ -265,11 +265,17 @@ onMounted(() => {
   syncInterval = setInterval(() => {
     syncData()
   }, 30000)
+  
+  // Listen for account switches
+  window.addEventListener('account-switched', fetchData)
 })
 
 onUnmounted(() => {
   if (syncInterval) {
     clearInterval(syncInterval)
   }
+  
+  // Clean up event listener
+  window.removeEventListener('account-switched', fetchData)
 })
 </script> 

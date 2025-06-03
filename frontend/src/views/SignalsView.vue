@@ -136,7 +136,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import axios from '@/plugins/axios'
 import { useAccountStore } from '@/stores/account'
 import SignalList from '@/components/SignalList.vue'
@@ -145,7 +145,7 @@ import OrderConfirmModal from '@/components/OrderConfirmModal.vue'
 interface Signal {
   id: number
   symbol: string
-  action: string
+  action: 'BUY' | 'SELL'
   price?: number
   stop_loss?: number
   take_profit?: number
@@ -178,11 +178,16 @@ const filteredSignals = computed(() => {
 })
 
 const fetchSignals = async () => {
+  loading.value = true
   try {
-    const response = await axios.get('/api/signals')
+    const response = await axios.get('/api/signals', {
+      params: filterStatus.value !== 'all' ? { status: filterStatus.value } : {}
+    })
     signals.value = response.data
   } catch (error) {
     console.error('Error fetching signals:', error)
+  } finally {
+    loading.value = false
   }
 }
 
@@ -271,5 +276,13 @@ const onOrderExecuted = (result: any) => {
 
 onMounted(() => {
   fetchSignals()
+  
+  // Listen for account switches
+  window.addEventListener('account-switched', fetchSignals)
+})
+
+onUnmounted(() => {
+  // Clean up event listener
+  window.removeEventListener('account-switched', fetchSignals)
 })
 </script> 

@@ -12,6 +12,7 @@ import secrets
 import asyncio
 from jose import JWTError, jwt
 from contextlib import asynccontextmanager
+from functools import lru_cache
 
 from models import (
     Signal, Trade, User, SignalCreate, TradeCreate, 
@@ -52,7 +53,7 @@ async def auto_sync_trades():
                     # Get broker client
                     client = AlpacaClient(
                         api_key=account[1],
-                        api_secret=account[2],
+                        secret_key=account[2],
                         paper=(account[3] == 'paper')
                     )
                     
@@ -234,23 +235,28 @@ async def get_active_account(user: User) -> Optional[Account]:
     finally:
         conn.close()
 
-def get_broker_client(account: Account) -> Optional[AlpacaClient]:
-    """Get broker client for the account"""
-    if account.broker == "alpaca":
-        # Don't override URL if it's one of the standard Alpaca URLs
-        # Let the SDK handle URL selection based on paper flag
-        url_override = account.base_url
-        if url_override in ["https://api.alpaca.markets", "https://paper-api.alpaca.markets", None, ""]:
-            url_override = None
-            
+@lru_cache(maxsize=128)
+def get_broker_client_cached(account_id: int, api_key: str, api_secret: str, account_type: str, broker: str) -> Optional[AlpacaClient]:
+    """Get cached broker client for the account"""
+    if broker == "alpaca":
         return AlpacaClient(
-            api_key=account.api_key,
-            api_secret=account.api_secret,
-            base_url=url_override,
-            paper=(account.account_type == "paper")
+            api_key=api_key,
+            secret_key=api_secret,
+            paper=(account_type == "paper")
         )
     # Add other brokers here in the future
     return None
+
+def get_broker_client(account: Account) -> Optional[AlpacaClient]:
+    """Get broker client for the account"""
+    # Use cached version to avoid creating multiple instances
+    return get_broker_client_cached(
+        account.id,
+        account.api_key,
+        account.api_secret,
+        account.account_type,
+        account.broker
+    )
 
 def process_with_regex_parser(cursor, message_id, message_data, source_id, accounts_config):
     """Process message with regex parser for multiple accounts"""
@@ -1604,6 +1610,54 @@ async def get_active_account_endpoint(current_user: User = Depends(get_current_u
         raise HTTPException(status_code=404, detail="No active account found")
     return account
 
+@app.get("/api/accounts/{account_id}/info")
+async def get_account_info(
+    account_id: int,
+    current_user: User = Depends(get_current_user)
+):
+    """Get account information from broker (balance, buying power, etc.)"""
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        
+        # Verify account belongs to user
+        cursor.execute(
+            "SELECT * FROM accounts WHERE id = %s AND user_id = %s",
+            (account_id, current_user.id)
+        )
+        account_data = cursor.fetchone()
+        
+        if not account_data:
+            raise HTTPException(status_code=404, detail="Account not found")
+        
+        # Convert to Account object
+        columns = [desc[0] for desc in cursor.description]
+        account_dict = dict(zip(columns, account_data))
+        account = Account(**account_dict)
+        
+        # Get broker client
+        broker_client = get_broker_client(account)
+        if not broker_client:
+            raise HTTPException(status_code=400, detail="Failed to initialize broker client")
+        
+        try:
+            # Get account info from broker
+            account_info = await broker_client.get_account_info()
+            return account_info
+        except Exception as e:
+            print(f"Error getting account info for account {account_id}: {e}")
+            # Return more detailed error information
+            if "forbidden" in str(e).lower():
+                raise HTTPException(
+                    status_code=403, 
+                    detail=f"API credentials rejected by Alpaca. Please verify your {account.account_type} API key and secret are correct."
+                )
+            else:
+                raise HTTPException(status_code=500, detail=f"Failed to get account info: {str(e)}")
+            
+    finally:
+        conn.close()
+
 # Signal Source Management endpoints
 @app.get("/api/sources", response_model=List[SignalSource])
 async def get_signal_sources(current_user: User = Depends(get_current_user)):
@@ -1882,14 +1936,31 @@ async def sync_trades_with_broker(current_user: User = Depends(get_current_user)
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
-        all_orders = await broker_client.get_orders(status='all', limit=500)
-        print(f"Fetched {len(all_orders)} orders from Alpaca")  # <-- LOG TO BACKEND CONSOLE
+        
+        # Add detailed logging
+        print(f"[SYNC] Starting sync for account {account.id} ({account.name}, {account.account_type})")
+        
+        try:
+            all_orders = await broker_client.get_orders(status='all', limit=500)
+            print(f"[SYNC] Successfully fetched {len(all_orders)} orders from Alpaca")
+        except Exception as e:
+            print(f"[SYNC] ERROR fetching orders: {type(e).__name__}: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            raise HTTPException(status_code=500, detail=f"Failed to fetch orders from broker: {str(e)}")
+        
         order_ids = [str(order['id']) for order in all_orders]
         imported_count = 0
         updated_count = 0
         
         # Fetch all open positions from Alpaca
-        positions = await broker_client.get_positions()
+        try:
+            positions = await broker_client.get_positions()
+            print(f"[SYNC] Successfully fetched {len(positions)} positions from Alpaca")
+        except Exception as e:
+            print(f"[SYNC] ERROR fetching positions: {type(e).__name__}: {str(e)}")
+            positions = []  # Continue without positions
+        
         # Build a symbol -> position map for quick lookup
         position_map = {pos['symbol']: pos for pos in positions}
         

@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import axios from '@/plugins/axios'
+import { useErrorStore } from '@/stores/error'
 
 interface Account {
   id: number
@@ -14,7 +15,10 @@ interface Account {
 export const useAccountStore = defineStore('account', {
   state: () => ({
     activeAccount: null as Account | null,
-    accounts: [] as Account[]
+    accounts: [] as Account[],
+    accountInfo: null as any,
+    loading: false,
+    error: null as string | null
   }),
 
   getters: {
@@ -36,39 +40,67 @@ export const useAccountStore = defineStore('account', {
   },
 
   actions: {
-    async fetchActiveAccount() {
-      try {
-        const response = await axios.get('/api/accounts/active')
-        this.activeAccount = response.data
-      } catch (error: any) {
-        console.error('Error fetching active account:', error)
-        // If no active account, try to get the first account
-        if (error.response?.status === 404) {
-          await this.fetchAccounts()
-          if (this.accounts.length > 0) {
-            // Activate the first account
-            await this.activateAccount(this.accounts[0].id)
-          }
-        }
-      }
-    },
-    
     async fetchAccounts() {
       try {
         const response = await axios.get('/api/accounts')
         this.accounts = response.data
       } catch (error) {
-        console.error('Error fetching accounts:', error)
+        console.error('Failed to fetch accounts:', error)
       }
     },
-    
+
+    async fetchActiveAccount() {
+      try {
+        const response = await axios.get('/api/accounts/active')
+        if (response.data) {
+          this.activeAccount = response.data
+        }
+      } catch (error) {
+        console.error('Failed to fetch active account:', error)
+      }
+    },
+
     async activateAccount(accountId: number) {
       try {
         await axios.post(`/api/accounts/${accountId}/activate`)
-        await this.fetchActiveAccount()
+        this.activeAccount = this.accounts.find(a => a.id === accountId) || null
       } catch (error) {
-        console.error('Error activating account:', error)
-        throw error
+        console.error('Failed to activate account:', error)
+      }
+    },
+
+    async fetchAccountInfo() {
+      const errorStore = useErrorStore()
+      
+      if (!this.activeAccount) {
+        errorStore.addWarning('No active account selected')
+        return
+      }
+
+      this.loading = true
+      this.error = null
+      
+      try {
+        const response = await axios.get(`/api/accounts/${this.activeAccount.id}/info`)
+        this.accountInfo = response.data
+        
+        // Check if account info is empty (which is the issue with live accounts)
+        if (response.data && Object.keys(response.data).length === 0) {
+          errorStore.addError('Account info returned empty. This may indicate an API credential issue.')
+        }
+      } catch (error: any) {
+        this.error = error.response?.data?.detail || 'Failed to fetch account info'
+        
+        // More specific error handling for common issues
+        if (error.response?.status === 403) {
+          errorStore.addError('API credentials rejected by Alpaca. Please verify your API key and secret.')
+        } else if (error.response?.data?.detail) {
+          errorStore.addError(`Account info error: ${error.response.data.detail}`)
+        }
+        
+        console.error('Failed to fetch account info:', error)
+      } finally {
+        this.loading = false
       }
     },
     

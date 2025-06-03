@@ -10,42 +10,45 @@ from alpaca.trading.requests import MarketOrderRequest, LimitOrderRequest, GetOr
 from alpaca.trading.enums import OrderSide, TimeInForce, OrderStatus
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockLatestQuoteRequest, StockLatestTradeRequest
+from alpaca.common.exceptions import APIError
 from dotenv import load_dotenv
 
 load_dotenv()
 
 class AlpacaClient:
-    def __init__(self, api_key: str = None, api_secret: str = None, base_url: str = None, paper: bool = True):
+    def __init__(self, api_key: str = None, secret_key: str = None, base_url: str = None, paper: bool = True):
         """
         Initialize Alpaca client
         
         Args:
             api_key: Alpaca API key
-            api_secret: Alpaca API secret
+            secret_key: Alpaca API secret
             base_url: Override base URL (optional)
             paper: Use paper trading (default True)
         """
         self.api_key = api_key or os.getenv("ALPACA_API_KEY")
-        self.api_secret = api_secret or os.getenv("ALPACA_API_SECRET")
+        self.secret_key = secret_key or os.getenv("ALPACA_API_SECRET")
         
-        if not self.api_key or not self.api_secret:
+        if not self.api_key or not self.secret_key:
             raise ValueError("Alpaca API credentials not provided")
         
-        # Log initialization details
-        print(f"[AlpacaClient] Initializing - Paper: {paper}, Base URL Override: {base_url}")
+        # Log initialization details (mask sensitive data)
+        masked_key = f"{self.api_key[:4]}...{self.api_key[-4:]}" if len(self.api_key) > 8 else "***"
+        print(f"[AlpacaClient] Initializing - Paper: {paper}, Base URL Override: {base_url}, API Key: {masked_key}")
         
         # Initialize trading client
         self.trading_client = TradingClient(
             api_key=self.api_key,
-            secret_key=self.api_secret,
+            secret_key=self.secret_key,
             paper=paper,
             url_override=base_url
         )
         
-        # Initialize data client (no auth required for basic data)
+        # Initialize data client for market data
         self.data_client = StockHistoricalDataClient(
             api_key=self.api_key,
-            secret_key=self.api_secret
+            secret_key=self.secret_key,
+            url_override=base_url
         )
         
         self.paper = paper
@@ -53,11 +56,16 @@ class AlpacaClient:
     async def get_account_info(self) -> Dict[str, Any]:
         """Get account information"""
         try:
-            print(f"[AlpacaClient] Getting account info - Paper: {self.paper}, Base URL Override: {self.trading_client._base_url if hasattr(self.trading_client, '_base_url') else 'default'}")
+            print(f"[AlpacaClient] Getting account info - Paper: {self.paper}")
+            
+            # Log the actual endpoint being used
+            if hasattr(self.trading_client, '_base_url'):
+                print(f"[AlpacaClient] Using base URL: {self.trading_client._base_url}")
+            
             account = self.trading_client.get_account()
             
             # Log successful response for debugging
-            print(f"[AlpacaClient] Successfully retrieved account info for {account.account_number if hasattr(account, 'account_number') else 'unknown'}")
+            print(f"[AlpacaClient] Successfully retrieved account info")
             
             return {
                 "buying_power": float(account.buying_power),
@@ -66,31 +74,25 @@ class AlpacaClient:
                 "account_blocked": account.account_blocked,
                 "trading_blocked": account.trading_blocked,
                 "transfers_blocked": getattr(account, 'transfers_blocked', False),
-                "trade_suspended_by_user": account.trade_suspended_by_user,
+                "trade_suspended_by_user": getattr(account, 'trade_suspended_by_user', False),
+                "currency": account.currency,
                 "pattern_day_trader": account.pattern_day_trader,
-                "crypto_status": getattr(account, 'crypto_status', 'INACTIVE'),
-                "fractional_trading": True  # Alpaca supports fractional trading by default for eligible stocks
+                "equity": float(account.equity),
+                "last_equity": float(account.last_equity),
+                "multiplier": float(account.multiplier),
+                "initial_margin": float(account.initial_margin),
+                "maintenance_margin": float(account.maintenance_margin),
+                "daytrade_count": account.daytrade_count
             }
+        except APIError as e:
+            print(f"[AlpacaClient] Alpaca API Error: {str(e)}")
+            # Check if it's a 403 error
+            if "forbidden" in str(e).lower():
+                print(f"[AlpacaClient] 403 Forbidden - Check if API key has correct permissions for {self.paper and 'paper' or 'live'} trading")
+            raise
         except Exception as e:
-            import traceback
-            print(f"[AlpacaClient] Error getting account info: {e}")
-            print(f"[AlpacaClient] Error type: {type(e).__name__}")
-            print(f"[AlpacaClient] Traceback: {traceback.format_exc()}")
-            
-            # Try to extract error details from the exception
-            error_details = {}
-            if hasattr(e, 'status_code'):
-                error_details['status_code'] = e.status_code
-            if hasattr(e, 'response'):
-                try:
-                    error_details['response_text'] = e.response.text if hasattr(e.response, 'text') else str(e.response)
-                except:
-                    pass
-            
-            print(f"[AlpacaClient] Error details: {error_details}")
-            
-            # Return empty dict but log the specific error
-            return {}
+            print(f"[AlpacaClient] Unexpected error getting account info: {type(e).__name__}: {str(e)}")
+            raise
     
     async def place_order(self, symbol: str, action: str, quantity: float, 
                          order_type: str = "market", limit_price: float = None,
