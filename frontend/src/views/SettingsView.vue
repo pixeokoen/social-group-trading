@@ -358,7 +358,7 @@
               <label class="block text-sm font-medium text-gray-700">Source Type</label>
               <select
                 v-model="sourceForm.source_type"
-                :disabled="editingSource"
+                :disabled="!!editingSource"
                 required
                 class="mt-1 block w-full px-4 py-3 border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 text-base"
               >
@@ -377,7 +377,7 @@
                 <input
                   v-model="sourceForm.source_identifier"
                   type="text"
-                  :disabled="editingSource"
+                  :disabled="!!editingSource"
                   placeholder="e.g., My Trading Phone"
                   class="block w-full px-4 py-3 border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 text-base"
                 />
@@ -516,6 +516,108 @@
         </form>
       </div>
     </div>
+
+    <!-- Edit Account Modal -->
+    <div v-if="showEditAccount" class="fixed z-10 inset-0 overflow-y-auto">
+      <div class="flex items-end justify-center min-h-screen pt-4 px-4 pb-20 text-center sm:block sm:p-0">
+        <div class="fixed inset-0 transition-opacity" @click="showEditAccount = false">
+          <div class="absolute inset-0 bg-gray-500 opacity-75"></div>
+        </div>
+        
+        <div class="inline-block align-bottom bg-white rounded-lg text-left overflow-hidden shadow-xl transform transition-all sm:my-8 sm:align-middle sm:max-w-lg sm:w-full">
+          <form @submit.prevent="updateAccount">
+            <div class="bg-white px-4 pt-5 pb-4 sm:p-6 sm:pb-4">
+              <h3 class="text-lg leading-6 font-medium text-gray-900 mb-4">Edit Trading Account</h3>
+              
+              <div class="space-y-4">
+                <div>
+                  <label class="block text-sm font-medium text-gray-700">Account Name</label>
+                  <input
+                    v-model="editAccountForm.name"
+                    type="text"
+                    required
+                    placeholder="My Alpaca Account"
+                    class="mt-1 block w-full px-4 py-3 border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 text-base"
+                  />
+                </div>
+                
+                <div>
+                  <label class="block text-sm font-medium text-gray-700">Account Type</label>
+                  <select
+                    v-model="editAccountForm.account_type"
+                    disabled
+                    class="mt-1 block w-full px-4 py-3 border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 text-base bg-gray-100"
+                  >
+                    <option value="paper">Paper Trading</option>
+                    <option value="live">Live Trading</option>
+                  </select>
+                </div>
+                
+                <div>
+                  <label class="block text-sm font-medium text-gray-700">Broker</label>
+                  <select
+                    v-model="editAccountForm.broker"
+                    disabled
+                    class="mt-1 block w-full px-4 py-3 border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 text-base bg-gray-100"
+                  >
+                    <option value="alpaca">Alpaca</option>
+                  </select>
+                </div>
+                
+                <div>
+                  <label class="block text-sm font-medium text-gray-700">API Key (leave empty to keep current)</label>
+                  <input
+                    v-model="editAccountForm.api_key"
+                    type="text"
+                    placeholder="Enter new API Key or leave empty"
+                    class="mt-1 block w-full px-4 py-3 border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 text-base"
+                  />
+                </div>
+                
+                <div>
+                  <label class="block text-sm font-medium text-gray-700">API Secret (leave empty to keep current)</label>
+                  <input
+                    v-model="editAccountForm.api_secret"
+                    type="password"
+                    placeholder="Enter new API Secret or leave empty"
+                    class="mt-1 block w-full px-4 py-3 border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 text-base"
+                  />
+                </div>
+                
+                <div>
+                  <label class="block text-sm font-medium text-gray-700">
+                    <input
+                      v-model="editAccountForm.is_default"
+                      type="checkbox"
+                      class="mr-2"
+                    />
+                    Set as default account
+                  </label>
+                </div>
+              </div>
+            </div>
+            
+            <div class="bg-gray-50 px-4 py-3 sm:px-6 sm:flex sm:flex-row-reverse">
+              <button
+                type="submit"
+                :disabled="loading"
+                class="w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-primary-600 text-base font-medium text-white hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500 sm:ml-3 sm:w-auto sm:text-sm disabled:opacity-50"
+              >
+                {{ loading ? 'Updating...' : 'Update Account' }}
+              </button>
+              <button
+                type="button"
+                @click="showEditAccount = false"
+                :disabled="loading"
+                class="mt-3 w-full inline-flex justify-center rounded-md border border-gray-300 shadow-sm px-4 py-2 bg-white text-base font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500 sm:mt-0 sm:ml-3 sm:w-auto sm:text-sm disabled:opacity-50"
+              >
+                Cancel
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -523,6 +625,8 @@
 import { ref, onMounted, computed } from 'vue'
 import axios from '@/plugins/axios'
 import { useAccountStore } from '@/stores/account'
+import { useErrorStore } from '@/stores/error'
+import { getFullApiUrl } from '@/config/api'
 
 interface Account {
   id: number
@@ -554,6 +658,7 @@ interface SignalSource {
 }
 
 const accountStore = useAccountStore()
+const errorStore = useErrorStore()
 const activeTab = ref('accounts')
 const accounts = ref<Account[]>([])
 const sources = ref<SignalSource[]>([])
@@ -561,8 +666,9 @@ const showAddAccount = ref(false)
 const showAddSource = ref(false)
 const editingSource = ref<SignalSource | null>(null)
 const loading = ref(false)
+const showEditAccount = ref(false)
 
-const apiUrl = computed(() => import.meta.env.VITE_API_URL || 'http://localhost:8000')
+const apiUrl = computed(() => getFullApiUrl())
 const activeAccountId = computed(() => accountStore.activeAccount?.id)
 
 const newAccount = ref({
@@ -586,6 +692,17 @@ const sourceForm = ref({
     chat_id: ''
   }
 })
+
+const editAccountForm = ref({
+  name: '',
+  account_type: 'paper' as 'paper' | 'live',
+  broker: 'alpaca',
+  api_key: '',
+  api_secret: '',
+  is_default: false
+})
+
+const editingAccount = ref<Account | null>(null)
 
 const fetchAccounts = async () => {
   try {
@@ -642,8 +759,46 @@ const activateAccount = async (accountId: number) => {
 }
 
 const editAccount = (account: Account) => {
-  // TODO: Implement edit functionality
-  alert('Edit functionality coming soon!')
+  editingAccount.value = account
+  editAccountForm.value = {
+    name: account.name,
+    account_type: account.account_type,
+    broker: account.broker,
+    api_key: '',
+    api_secret: '',
+    is_default: account.is_default
+  }
+  showEditAccount.value = true
+}
+
+const updateAccount = async () => {
+  if (!editingAccount.value) return
+  
+  loading.value = true
+  try {
+    const updateData: any = {
+      name: editAccountForm.value.name,
+      is_default: editAccountForm.value.is_default
+    }
+    
+    if (editAccountForm.value.api_key) {
+      updateData.api_key = editAccountForm.value.api_key
+    }
+    if (editAccountForm.value.api_secret) {
+      updateData.api_secret = editAccountForm.value.api_secret
+    }
+    
+    await axios.put(`/api/accounts/${editingAccount.value.id}`, updateData)
+    showEditAccount.value = false
+    editingAccount.value = null
+    await fetchAccounts()
+    await accountStore.fetchActiveAccount()
+  } catch (error: any) {
+    console.error('Error updating account:', error)
+    errorStore.addError(error.response?.data?.detail || 'Failed to update account')
+  } finally {
+    loading.value = false
+  }
 }
 
 const deleteAccount = async (accountId: number) => {
