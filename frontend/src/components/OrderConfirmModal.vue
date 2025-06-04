@@ -313,6 +313,7 @@ interface Signal {
   stop_loss?: number
   take_profit?: number
   quantity?: number
+  source?: string
 }
 
 interface Props {
@@ -572,26 +573,41 @@ const executeOrder = async () => {
   executing.value = true
   try {
     if (isNewSignal.value) {
-      // 1. Create the signal (should be 'pending')
-      const signalData = {
-        symbol: orderForm.value.symbol,
-        action: orderForm.value.action,
-        quantity: orderForm.value.quantity,
-        price: orderForm.value.order_type === 'LIMIT' ? orderForm.value.limit_price : null
+      // Check if this is a position close
+      if (props.signal.source === 'close_position') {
+        // Use the close-position endpoint for proper P&L tracking
+        const response = await axios.post('/api/trades/close-position', {
+          symbol: orderForm.value.symbol,
+          quantity: orderForm.value.quantity,
+          order_type: orderForm.value.order_type,
+          limit_price: orderForm.value.limit_price,
+          time_in_force: orderForm.value.time_in_force
+        })
+        emit('executed', response.data)
+        close()
+      } else {
+        // Regular new signal flow
+        // 1. Create the signal (should be 'pending')
+        const signalData = {
+          symbol: orderForm.value.symbol,
+          action: orderForm.value.action,
+          quantity: orderForm.value.quantity,
+          price: orderForm.value.order_type === 'LIMIT' ? orderForm.value.limit_price : null
+        }
+        const signalResponse = await axios.post('/api/signals', signalData)
+        const newSignalId = signalResponse.data.id
+        // 2. Approve the signal
+        await axios.post(`/api/signals/${newSignalId}/approve`, { approved: true })
+        // 3. Execute the trade
+        const response = await axios.post(`/api/trades/execute/${newSignalId}`, {
+          quantity: orderForm.value.quantity,
+          order_type: orderForm.value.order_type,
+          limit_price: orderForm.value.limit_price,
+          time_in_force: orderForm.value.time_in_force
+        })
+        emit('executed', response.data)
+        close()
       }
-      const signalResponse = await axios.post('/api/signals', signalData)
-      const newSignalId = signalResponse.data.id
-      // 2. Approve the signal
-      await axios.post(`/api/signals/${newSignalId}/approve`, { approved: true })
-      // 3. Execute the trade
-      const response = await axios.post(`/api/trades/execute/${newSignalId}`, {
-        quantity: orderForm.value.quantity,
-        order_type: orderForm.value.order_type,
-        limit_price: orderForm.value.limit_price,
-        time_in_force: orderForm.value.time_in_force
-      })
-      emit('executed', response.data)
-      close()
     } else {
       // Existing flow for already created signals
       await axios.post(`/api/signals/${props.signal.id}/approve`, { approved: true })

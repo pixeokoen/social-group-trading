@@ -4,7 +4,9 @@
 
 ### 1. Backend Server
 ```bash
-cd C:\_Dev\social-group-trading\backend
+python -m venv venv
+.\venv\Scripts\activate
+cd backend
 python main.py
 ```
 The backend will start on http://localhost:8000

@@ -122,13 +122,13 @@
                       </td>
                       <td class="px-6 py-4 whitespace-nowrap text-sm">
                         <span 
-                          v-if="trade.status === 'open' && trade.floating_pnl !== null"
+                          v-if="trade.status === 'open' && trade.floating_pnl !== null && trade.floating_pnl !== undefined"
                           :class="trade.floating_pnl >= 0 ? 'text-green-600' : 'text-red-600'"
                         >
                           ${{ formatPrice(trade.floating_pnl) }}
                         </span>
                         <span 
-                          v-else-if="trade.status === 'closed' && trade.pnl !== null"
+                          v-else-if="trade.status === 'closed' && trade.pnl !== null && trade.pnl !== undefined"
                           :class="trade.pnl >= 0 ? 'text-green-600' : 'text-red-600'"
                         >
                           ${{ formatPrice(trade.pnl) }}
@@ -150,18 +150,11 @@
                       </td>
                       <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                         <button
-                          v-if="trade.status === 'open'"
-                          @click="closeTrade(trade.id)"
+                          v-if="trade.status === 'open' && trade.action === 'BUY'"
+                          @click="openCloseTradeModal(trade)"
                           class="text-red-600 hover:text-red-900"
                         >
                           Close
-                        </button>
-                        <button
-                          v-if="trade.status === 'open'"
-                          @click="updatePrice(trade.id)"
-                          class="ml-3 text-primary-600 hover:text-primary-900"
-                        >
-                          Update Price
                         </button>
                       </td>
                     </tr>
@@ -176,18 +169,55 @@
         </div>
       </div>
     </div>
+    
+    <!-- Order Confirmation Modal for closing trades -->
+    <OrderConfirmModal
+      :signal="selectedTrade"
+      :is-open="showCloseModal"
+      @close="closeModal"
+      @executed="onTradeExecuted"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
 import axios from '@/plugins/axios'
+import OrderConfirmModal from '@/components/OrderConfirmModal.vue'
 
-const trades = ref([])
+interface Trade {
+  id: number
+  symbol: string
+  action: 'BUY' | 'SELL'
+  quantity: number
+  entry_price?: number
+  broker_fill_price?: number
+  current_price?: number
+  floating_pnl?: number
+  pnl?: number
+  status: string
+  justUpdated?: boolean
+}
+
+interface Notification {
+  id: number
+  data: {
+    message: string
+    trade_id: number
+    status: string
+    fill_price?: number
+    quantity?: number
+    type: string
+  }
+}
+
+const trades = ref<Trade[]>([])
 const syncing = ref(false)
 const lastSync = ref<Date | null>(null)
-const notifications = ref([])
+const notifications = ref<Notification[]>([])
 const streamConnected = ref(false)
+const showCloseModal = ref(false)
+const selectedTrade = ref<any>(null)
 let syncInterval: any = null
 let notificationInterval: any = null
 
@@ -289,7 +319,7 @@ const checkNotifications = async () => {
       }
       
       // Refresh trades to get latest data
-      if (newNotifications.some(n => ['order_filled', 'order_partial_fill'].includes(n.data.type))) {
+      if (newNotifications.some((n: Notification) => ['order_filled', 'order_partial_fill'].includes(n.data.type))) {
         await fetchTrades()
       }
       
@@ -308,27 +338,31 @@ const dismissNotifications = () => {
   notifications.value = []
 }
 
-const closeTrade = async (tradeId: number) => {
-  if (!confirm('Are you sure you want to close this trade?')) return
+const openCloseTradeModal = (trade: Trade) => {
+  // Create a signal-like object for the modal
+  // When closing a trade, we need to SELL if we bought, or BUY if we sold (short)
+  const closeAction = trade.action === 'BUY' ? 'SELL' : 'BUY'
   
-  try {
-    await axios.post(`/api/trades/${tradeId}/close`, {})
-    await fetchTrades()
-    alert('Trade closed successfully')
-  } catch (error) {
-    console.error('Error closing trade:', error)
-    alert('Failed to close trade')
+  selectedTrade.value = {
+    id: 0, // 0 indicates this is a new order
+    symbol: trade.symbol,
+    action: closeAction,
+    quantity: trade.quantity, // Default to closing the full position
+    source: 'close_position',
+    original_trade_id: trade.id // Store reference to the trade being closed
   }
+  
+  showCloseModal.value = true
 }
 
-const updatePrice = async (tradeId: number) => {
-  try {
-    await axios.get(`/api/trades/${tradeId}/update-price`)
-    await fetchTrades()
-  } catch (error) {
-    console.error('Error updating price:', error)
-    alert('Failed to update price')
-  }
+const closeModal = () => {
+  showCloseModal.value = false
+  selectedTrade.value = null
+}
+
+const onTradeExecuted = async (result: any) => {
+  alert(`Trade closed successfully! Order ID: ${result.broker_order_id}`)
+  await fetchTrades()
 }
 
 const importPositions = async () => {

@@ -34,13 +34,19 @@ const router = createRouter({
     {
       path: '/trades',
       name: 'trades',
-      component: TradesView,
+      component: () => import('../views/TradesView.vue'),
+      meta: { requiresAuth: true }
+    },
+    {
+      path: '/positions',
+      name: 'positions',
+      component: () => import('../views/PositionsView.vue'),
       meta: { requiresAuth: true }
     },
     {
       path: '/settings',
       name: 'settings',
-      component: SettingsView,
+      component: () => import('../views/SettingsView.vue'),
       meta: { requiresAuth: true }
     }
   ]

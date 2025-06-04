@@ -29,13 +29,13 @@
             </span>
           </div>
           <div class="mt-2 text-sm text-gray-500">
-            <div>{{ trade.quantity }} @ ${{ trade.entry_price }}</div>
+            <div>{{ trade.quantity }} @ ${{ trade.entry_price || 0 }}</div>
             <div v-if="trade.exit_price">Exit: ${{ trade.exit_price }}</div>
           </div>
           <div class="mt-2 flex items-center justify-between">
             <div>
               <span
-                v-if="trade.pnl !== null && trade.pnl !== undefined"
+                v-if="(trade.action === 'SELL' && trade.status === 'closed' && trade.pnl !== null && trade.pnl !== undefined)"
                 :class="[
                   'text-sm font-medium',
                   (trade.pnl || 0) >= 0 ? 'text-green-600' : 'text-red-600'
@@ -44,7 +44,7 @@
                 P&L: {{ (trade.pnl || 0) >= 0 ? '+' : '' }}${{ trade.pnl ? Math.abs(trade.pnl).toFixed(2) : '0.00' }}
               </span>
               <span
-                v-else-if="trade.floating_pnl !== null && trade.floating_pnl !== undefined"
+                v-else-if="trade.status === 'open' && trade.action === 'BUY' && trade.floating_pnl !== null && trade.floating_pnl !== undefined"
                 :class="[
                   'text-sm font-medium',
                   (trade.floating_pnl || 0) >= 0 ? 'text-green-600' : 'text-red-600'
@@ -54,9 +54,9 @@
               </span>
             </div>
             <button
-              v-if="trade.status === 'open'"
-              @click="$emit('close', trade.id)"
-              class="text-xs text-primary-600 hover:text-primary-900"
+              v-if="trade.status === 'open' && trade.action === 'BUY'"
+              @click="$emit('close', trade)"
+              class="text-xs text-red-600 hover:text-red-900"
             >
               Close Trade
             </button>
@@ -115,17 +115,11 @@
               {{ trade.quantity }}
             </td>
             <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-              ${{ trade.entry_price }}
+              ${{ trade.entry_price || 0 }}
             </td>
             <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
               <div v-if="trade.status === 'open' && trade.current_price">
                 ${{ trade.current_price }}
-                <button
-                  @click="$emit('update-price', trade.id)"
-                  class="ml-2 text-xs text-primary-600 hover:text-primary-900"
-                >
-                  Refresh
-                </button>
               </div>
               <div v-else-if="trade.exit_price">
                 ${{ trade.exit_price }}
@@ -134,7 +128,7 @@
             </td>
             <td class="px-6 py-4 whitespace-nowrap text-sm font-medium">
               <span
-                v-if="trade.pnl !== null && trade.pnl !== undefined"
+                v-if="(trade.action === 'SELL' && trade.status === 'closed' && trade.pnl !== null && trade.pnl !== undefined)"
                 :class="[
                   'font-medium',
                   (trade.pnl || 0) >= 0 ? 'text-green-600' : 'text-red-600'
@@ -143,7 +137,7 @@
                 {{ (trade.pnl || 0) >= 0 ? '+' : '' }}${{ trade.pnl ? Math.abs(trade.pnl).toFixed(2) : '0.00' }}
               </span>
               <span
-                v-else-if="trade.floating_pnl !== null && trade.floating_pnl !== undefined"
+                v-else-if="trade.status === 'open' && trade.action === 'BUY' && trade.floating_pnl !== null && trade.floating_pnl !== undefined"
                 :class="[
                   'font-medium',
                   (trade.floating_pnl || 0) >= 0 ? 'text-green-600' : 'text-red-600'
@@ -169,9 +163,9 @@
             </td>
             <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
               <button
-                v-if="trade.status === 'open'"
-                @click="$emit('close', trade.id)"
-                class="text-primary-600 hover:text-primary-900"
+                v-if="trade.status === 'open' && trade.action === 'BUY'"
+                @click="$emit('close', trade)"
+                class="text-red-600 hover:text-red-900"
               >
                 Close
               </button>
@@ -196,13 +190,13 @@ interface Trade {
   symbol: string
   action: 'BUY' | 'SELL'
   quantity: number
-  entry_price: number
+  entry_price?: number
   exit_price?: number
   current_price?: number
   pnl?: number
   floating_pnl?: number
   status: 'pending' | 'open' | 'closed' | 'cancelled'
-  created_at: string
+  created_at?: string
   closed_at?: string
   close_reason?: string
 }
@@ -212,7 +206,7 @@ defineProps<{
 }>()
 
 defineEmits<{
-  close: [id: number]
+  close: [trade: Trade]
   'update-price': [id: number]
 }>()
 </script> 

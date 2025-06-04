@@ -1,9 +1,24 @@
 <template>
   <div class="py-6">
     <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-      <div class="md:flex md:items-center md:justify-between">
+      <div class="md:flex md:items-center md:justify-between mb-8">
         <h1 class="text-2xl font-semibold text-gray-900">Dashboard</h1>
         <div class="mt-4 flex space-x-3 md:mt-0">
+          <button
+            @click="recalculatePnL"
+            :disabled="recalculating"
+            class="inline-flex items-center px-4 py-2 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500 disabled:opacity-50"
+          >
+            <svg 
+              :class="['mr-2 h-4 w-4', recalculating ? 'animate-spin' : '']" 
+              fill="none" 
+              stroke="currentColor" 
+              viewBox="0 0 24 24"
+            >
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
+            </svg>
+            {{ recalculating ? 'Recalculating...' : 'Recalculate P&L' }}
+          </button>
           <button
             @click="syncData"
             :disabled="syncing"
@@ -146,13 +161,21 @@
       <div class="mt-8">
         <h2 class="text-lg leading-6 font-medium text-gray-900 mb-4">Recent Trades</h2>
         <div v-if="recentTrades.length > 0">
-          <TradeList :trades="recentTrades" />
+          <TradeList :trades="recentTrades" @close="openCloseTradeModal" />
         </div>
         <div v-else class="bg-white shadow rounded-lg p-6 text-center text-gray-500">
           No trades yet for this account
         </div>
       </div>
     </div>
+    
+    <!-- Order Confirmation Modal for closing trades -->
+    <OrderConfirmModal
+      :signal="selectedTrade"
+      :is-open="showCloseModal"
+      @close="closeModal"
+      @executed="onTradeExecuted"
+    />
   </div>
 </template>
 
@@ -161,8 +184,50 @@ import { ref, onMounted, onUnmounted } from 'vue'
 import axios from '@/plugins/axios'
 import SignalList from '@/components/SignalList.vue'
 import TradeList from '@/components/TradeList.vue'
+import OrderConfirmModal from '@/components/OrderConfirmModal.vue'
 
-const analytics = ref({
+interface Trade {
+  id: number
+  symbol: string
+  action: 'BUY' | 'SELL'
+  quantity: number
+  entry_price?: number
+  exit_price?: number
+  current_price?: number
+  floating_pnl?: number
+  pnl?: number
+  status: string
+  close_reason?: string
+}
+
+interface Analytics {
+  // Trade statistics
+  total_trades: number
+  open_trades: number
+  pending_trades: number
+  winning_trades: number
+  losing_trades: number
+  total_pnl: number
+  avg_pnl: number
+  win_rate: number
+  total_floating_pnl: number
+  
+  // Signal statistics
+  total_signals: number
+  pending_signals: number
+  approved_signals: number
+  rejected_signals: number
+  executed_signals: number
+  
+  // Account info
+  active_account: string
+  account_type: string
+  
+  // Recent trades
+  recent_trades: any[]
+}
+
+const analytics = ref<Analytics>({
   // Trade statistics
   total_trades: 0,
   open_trades: 0,
@@ -185,14 +250,17 @@ const analytics = ref({
   active_account: '',
   account_type: '',
   
-  // Recent trades (from analytics endpoint)
+  // Recent trades
   recent_trades: []
 })
 
 const recentSignals = ref([])
-const recentTrades = ref([])
+const recentTrades = ref<Trade[]>([])
 const syncing = ref(false)
+const recalculating = ref(false)
 const lastSync = ref<Date | null>(null)
+const showCloseModal = ref(false)
+const selectedTrade = ref<any>(null)
 let syncInterval: any = null
 
 const formatNumber = (num: number) => {
@@ -255,6 +323,45 @@ const executeSignal = async (signalId: number) => {
     await fetchData() // Refresh data
   } catch (error) {
     console.error('Error executing signal:', error)
+  }
+}
+
+const openCloseTradeModal = (trade: Trade) => {
+  // Create a signal-like object for the modal
+  // When closing a trade, we need to SELL if we bought, or BUY if we sold (short)
+  const closeAction = trade.action === 'BUY' ? 'SELL' : 'BUY'
+  
+  selectedTrade.value = {
+    id: 0, // 0 indicates this is a new order
+    symbol: trade.symbol,
+    action: closeAction,
+    quantity: trade.quantity, // Default to closing the full position
+    source: 'close_position',
+    original_trade_id: trade.id // Store reference to the trade being closed
+  }
+  
+  showCloseModal.value = true
+}
+
+const closeModal = () => {
+  showCloseModal.value = false
+  selectedTrade.value = null
+}
+
+const onTradeExecuted = async (result: any) => {
+  alert(`Trade closed successfully! Order ID: ${result.broker_order_id}`)
+  await fetchData() // Refresh dashboard data
+}
+
+const recalculatePnL = async () => {
+  recalculating.value = true
+  try {
+    await axios.post('/api/trades/recalculate-pnl')
+    await fetchData()
+  } catch (error) {
+    console.error('Error recalculating P&L:', error)
+  } finally {
+    recalculating.value = false
   }
 }
 

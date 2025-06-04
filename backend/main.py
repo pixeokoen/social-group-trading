@@ -12,7 +12,6 @@ import secrets
 import asyncio
 from jose import JWTError, jwt
 from contextlib import asynccontextmanager
-from functools import lru_cache
 
 from models import (
     Signal, Trade, User, SignalCreate, TradeCreate, 
@@ -235,28 +234,17 @@ async def get_active_account(user: User) -> Optional[Account]:
     finally:
         conn.close()
 
-@lru_cache(maxsize=128)
-def get_broker_client_cached(account_id: int, api_key: str, api_secret: str, account_type: str, broker: str) -> Optional[AlpacaClient]:
-    """Get cached broker client for the account"""
-    if broker == "alpaca":
+def get_broker_client(account: Account) -> Optional[AlpacaClient]:
+    """Get broker client for the account"""
+    if account.broker == "alpaca":
         return AlpacaClient(
-            api_key=api_key,
-            secret_key=api_secret,
-            paper=(account_type == "paper")
+            api_key=account.api_key,
+            secret_key=account.api_secret,
+            base_url=account.base_url,
+            paper=(account.account_type == "paper")
         )
     # Add other brokers here in the future
     return None
-
-def get_broker_client(account: Account) -> Optional[AlpacaClient]:
-    """Get broker client for the account"""
-    # Use cached version to avoid creating multiple instances
-    return get_broker_client_cached(
-        account.id,
-        account.api_key,
-        account.api_secret,
-        account.account_type,
-        account.broker
-    )
 
 def process_with_regex_parser(cursor, message_id, message_data, source_id, accounts_config):
     """Process message with regex parser for multiple accounts"""
@@ -1118,6 +1106,155 @@ async def execute_trade(
     finally:
         conn.close()
 
+@app.post("/api/trades/close-position")
+async def close_position(
+    close_params: Dict[str, Any],
+    current_user: User = Depends(get_current_user)
+):
+    """Close or partially close a position with proper P&L tracking"""
+    # Get active account
+    account = await get_active_account(current_user)
+    if not account:
+        raise HTTPException(status_code=400, detail="No active trading account")
+    
+    # Get broker client
+    broker_client = get_broker_client(account)
+    if not broker_client:
+        raise HTTPException(status_code=400, detail="Failed to initialize broker client")
+    
+    symbol = close_params.get('symbol')
+    quantity_to_close = float(close_params.get('quantity', 0))
+    order_type = close_params.get('order_type', 'MARKET')
+    limit_price = close_params.get('limit_price')
+    
+    if not symbol or quantity_to_close <= 0:
+        raise HTTPException(status_code=400, detail="Invalid symbol or quantity")
+    
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        
+        # Get all open BUY trades for this symbol (FIFO - First In First Out)
+        cursor.execute("""
+            SELECT id, quantity, entry_price, broker_fill_price
+            FROM trades 
+            WHERE user_id = %s 
+            AND account_id = %s 
+            AND symbol = %s 
+            AND action = 'BUY' 
+            AND status = 'open'
+            ORDER BY created_at ASC
+        """, (current_user.id, account.id, symbol))
+        
+        open_positions = cursor.fetchall()
+        
+        if not open_positions:
+            raise HTTPException(status_code=400, detail=f"No open positions found for {symbol}")
+        
+        # Calculate total open quantity
+        total_open_quantity = sum(float(pos[1]) for pos in open_positions)
+        
+        if quantity_to_close > total_open_quantity:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Cannot close {quantity_to_close} shares. Only {total_open_quantity} shares available."
+            )
+        
+        # Place the sell order
+        alpaca_order_type = 'limit' if order_type == 'LIMIT' else 'market'
+        order_id = await broker_client.place_order(
+            symbol=symbol,
+            action='SELL',
+            quantity=quantity_to_close,
+            order_type=alpaca_order_type,
+            limit_price=float(limit_price) if limit_price else None
+        )
+        
+        if not order_id:
+            raise HTTPException(status_code=500, detail="Failed to place sell order")
+        
+        # Create a SELL trade record
+        cursor.execute("""
+            INSERT INTO trades (
+                user_id, account_id, symbol, action, quantity,
+                entry_price, status, broker_order_id, created_at
+            )
+            VALUES (%s, %s, %s, 'SELL', %s, %s, 'pending', %s, %s)
+            RETURNING id
+        """, (
+            current_user.id, account.id, symbol, quantity_to_close,
+            limit_price or 0, str(order_id), datetime.utcnow()
+        ))
+        
+        sell_trade_id = cursor.fetchone()[0]
+        
+        # Track which positions are being closed (for P&L calculation later)
+        remaining_to_close = quantity_to_close
+        positions_to_update = []
+        
+        for pos_id, pos_quantity, entry_price, fill_price in open_positions:
+            if remaining_to_close <= 0:
+                break
+                
+            pos_quantity = float(pos_quantity)
+            close_quantity = min(remaining_to_close, pos_quantity)
+            
+            positions_to_update.append({
+                'id': pos_id,
+                'close_quantity': close_quantity,
+                'remaining_quantity': pos_quantity - close_quantity,
+                'entry_price': float(fill_price or entry_price)
+            })
+            
+            remaining_to_close -= close_quantity
+        
+        # Store the position closing info in a JSON field for later P&L calculation
+        # We'll store the type info inside the JSON data itself to avoid column name issues
+        cursor.execute("""
+            INSERT INTO trade_notifications (
+                user_id, trade_id, data, created_at
+            )
+            VALUES (%s, %s, %s, %s)
+        """, (
+            current_user.id, sell_trade_id, 
+            json.dumps({
+                'notification_type': 'position_close_pending',  # Store type in JSON
+                'positions_to_close': positions_to_update,
+                'total_quantity': quantity_to_close
+            }),
+            datetime.utcnow()
+        ))
+        
+        conn.commit()
+        
+        # Send real-time notification
+        await notify_trade_update(current_user.id, {
+            "trade_id": sell_trade_id,
+            "symbol": symbol,
+            "action": "SELL",
+            "quantity": quantity_to_close,
+            "status": "pending",
+            "message": f"Closing {quantity_to_close} shares of {symbol}"
+        })
+        
+        return {
+            "message": "Position close order submitted",
+            "trade_id": sell_trade_id,
+            "broker_order_id": str(order_id),
+            "quantity_closed": quantity_to_close,
+            "positions_affected": len(positions_to_update)
+        }
+        
+    except HTTPException:
+        conn.rollback()
+        raise
+    except Exception as e:
+        conn.rollback()
+        print(f"Error closing position: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
+
 @app.post("/api/trades/{trade_id}/close")
 async def close_trade(
     trade_id: int,
@@ -1281,10 +1418,10 @@ async def get_analytics(current_user: User = Depends(get_current_user)):
                 COUNT(*) as total_trades,
                 COUNT(CASE WHEN status = 'open' THEN 1 END) as open_trades,
                 COUNT(CASE WHEN status = 'pending' THEN 1 END) as pending_trades,
-                COUNT(CASE WHEN status = 'closed' AND pnl > 0 THEN 1 END) as winning_trades,
-                COUNT(CASE WHEN status = 'closed' AND pnl < 0 THEN 1 END) as losing_trades,
-                COALESCE(SUM(CASE WHEN status = 'closed' THEN pnl ELSE 0 END), 0) as total_pnl,
-                COALESCE(AVG(CASE WHEN status = 'closed' THEN pnl ELSE NULL END), 0) as avg_pnl,
+                COUNT(CASE WHEN action = 'SELL' AND status = 'closed' AND pnl > 0 THEN 1 END) as winning_trades,
+                COUNT(CASE WHEN action = 'SELL' AND status = 'closed' AND pnl < 0 THEN 1 END) as losing_trades,
+                COALESCE(SUM(CASE WHEN action = 'SELL' AND status = 'closed' THEN pnl ELSE 0 END), 0) as total_pnl,
+                COALESCE(AVG(CASE WHEN action = 'SELL' AND status = 'closed' THEN pnl ELSE NULL END), 0) as avg_pnl,
                 AVG(CASE WHEN status = 'closed' THEN EXTRACT(EPOCH FROM (closed_at - opened_at))/3600 ELSE NULL END) as avg_trade_duration_hours,
                 COALESCE(SUM(CASE WHEN status = 'open' THEN floating_pnl ELSE 0 END), 0) as total_floating_pnl
             FROM trades 
@@ -1610,54 +1747,6 @@ async def get_active_account_endpoint(current_user: User = Depends(get_current_u
         raise HTTPException(status_code=404, detail="No active account found")
     return account
 
-@app.get("/api/accounts/{account_id}/info")
-async def get_account_info(
-    account_id: int,
-    current_user: User = Depends(get_current_user)
-):
-    """Get account information from broker (balance, buying power, etc.)"""
-    conn = get_db_connection()
-    try:
-        cursor = conn.cursor()
-        
-        # Verify account belongs to user
-        cursor.execute(
-            "SELECT * FROM accounts WHERE id = %s AND user_id = %s",
-            (account_id, current_user.id)
-        )
-        account_data = cursor.fetchone()
-        
-        if not account_data:
-            raise HTTPException(status_code=404, detail="Account not found")
-        
-        # Convert to Account object
-        columns = [desc[0] for desc in cursor.description]
-        account_dict = dict(zip(columns, account_data))
-        account = Account(**account_dict)
-        
-        # Get broker client
-        broker_client = get_broker_client(account)
-        if not broker_client:
-            raise HTTPException(status_code=400, detail="Failed to initialize broker client")
-        
-        try:
-            # Get account info from broker
-            account_info = await broker_client.get_account_info()
-            return account_info
-        except Exception as e:
-            print(f"Error getting account info for account {account_id}: {e}")
-            # Return more detailed error information
-            if "forbidden" in str(e).lower():
-                raise HTTPException(
-                    status_code=403, 
-                    detail=f"API credentials rejected by Alpaca. Please verify your {account.account_type} API key and secret are correct."
-                )
-            else:
-                raise HTTPException(status_code=500, detail=f"Failed to get account info: {str(e)}")
-            
-    finally:
-        conn.close()
-
 # Signal Source Management endpoints
 @app.get("/api/sources", response_model=List[SignalSource])
 async def get_signal_sources(current_user: User = Depends(get_current_user)):
@@ -1936,31 +2025,14 @@ async def sync_trades_with_broker(current_user: User = Depends(get_current_user)
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
-        
-        # Add detailed logging
-        print(f"[SYNC] Starting sync for account {account.id} ({account.name}, {account.account_type})")
-        
-        try:
-            all_orders = await broker_client.get_orders(status='all', limit=500)
-            print(f"[SYNC] Successfully fetched {len(all_orders)} orders from Alpaca")
-        except Exception as e:
-            print(f"[SYNC] ERROR fetching orders: {type(e).__name__}: {str(e)}")
-            import traceback
-            traceback.print_exc()
-            raise HTTPException(status_code=500, detail=f"Failed to fetch orders from broker: {str(e)}")
-        
+        all_orders = await broker_client.get_orders(status='all', limit=500)
+        print(f"Fetched {len(all_orders)} orders from Alpaca")  # <-- LOG TO BACKEND CONSOLE
         order_ids = [str(order['id']) for order in all_orders]
         imported_count = 0
         updated_count = 0
         
         # Fetch all open positions from Alpaca
-        try:
-            positions = await broker_client.get_positions()
-            print(f"[SYNC] Successfully fetched {len(positions)} positions from Alpaca")
-        except Exception as e:
-            print(f"[SYNC] ERROR fetching positions: {type(e).__name__}: {str(e)}")
-            positions = []  # Continue without positions
-        
+        positions = await broker_client.get_positions()
         # Build a symbol -> position map for quick lookup
         position_map = {pos['symbol']: pos for pos in positions}
         
@@ -1976,7 +2048,11 @@ async def sync_trades_with_broker(current_user: User = Depends(get_current_user)
             alpaca_status = order['status']
             our_status = 'pending'
             if alpaca_status == 'filled':
-                our_status = 'open'
+                # SELL orders should be marked as closed when filled
+                if order['side'].upper() == 'SELL':
+                    our_status = 'closed'
+                else:
+                    our_status = 'open'
             elif alpaca_status in ['canceled', 'cancelled', 'expired', 'rejected']:
                 our_status = 'cancelled'
             elif alpaca_status == 'partially_filled':
@@ -1996,8 +2072,76 @@ async def sync_trades_with_broker(current_user: User = Depends(get_current_user)
             if existing_trade:
                 trade_id, entry_price, quantity, action, db_status, symbol = existing_trade
                 current_price = None
+                
+                # Special handling for SELL orders that are filled
+                if action == 'SELL' and our_status == 'open' and alpaca_status == 'filled':
+                    # Check if this is a position close
+                    cursor.execute("""
+                        SELECT data FROM trade_notifications 
+                        WHERE trade_id = %s
+                    """, (trade_id,))
+                    notifications = cursor.fetchall()
+                    
+                    for notification in notifications:
+                        if notification[0]:
+                            # Parse the JSON data
+                            notif_data = notification[0] if isinstance(notification[0], dict) else json.loads(notification[0])
+                            
+                            # Check if this is a position close notification
+                            if notif_data.get('notification_type') == 'position_close_pending':
+                                # This is a position close, calculate P&L
+                                positions_to_close = notif_data.get('positions_to_close', [])
+                                sell_price = float(order.get('filled_avg_price', 0))
+                                
+                                total_pnl = 0
+                                for pos in positions_to_close:
+                                    pos_entry_price = pos['entry_price']
+                                    pos_close_quantity = pos['close_quantity']
+                                    # Calculate P&L for this portion
+                                    pos_pnl = (sell_price - pos_entry_price) * pos_close_quantity
+                                    total_pnl += pos_pnl
+                                    
+                                    # Update the original BUY trade
+                                    if pos['remaining_quantity'] > 0:
+                                        # Partial close - update quantity
+                                        cursor.execute("""
+                                            UPDATE trades 
+                                            SET quantity = %s
+                                            WHERE id = %s
+                                        """, (pos['remaining_quantity'], pos['id']))
+                                    else:
+                                        # Full close - mark as closed
+                                        cursor.execute("""
+                                            UPDATE trades 
+                                            SET status = 'closed',
+                                                exit_price = %s,
+                                                pnl = %s,
+                                                closed_at = %s,
+                                                close_reason = 'Position closed'
+                                            WHERE id = %s
+                                        """, (sell_price, pos_pnl, order.get('filled_at'), pos['id']))
+                                
+                                # Update the SELL trade with total P&L
+                                pnl = total_pnl
+                                our_status = 'closed'  # Mark SELL trades as closed when filled
+                                
+                                # Update the notification to mark it as processed
+                                notif_data['notification_type'] = 'position_close_completed'
+                                cursor.execute("""
+                                    UPDATE trade_notifications 
+                                    SET data = %s
+                                    WHERE trade_id = %s AND id = (
+                                        SELECT id FROM trade_notifications 
+                                        WHERE trade_id = %s 
+                                        ORDER BY created_at DESC 
+                                        LIMIT 1
+                                    )
+                                """, (json.dumps(notif_data), trade_id, trade_id))
+                                
+                                break  # We found and processed the position close
+                
                 # Always try to get the latest price for open trades
-                if our_status == 'open':
+                if our_status == 'open' and action == 'BUY':
                     if symbol in position_map:
                         current_price = float(position_map[symbol].get('current_price', 0))
                     else:
@@ -2039,8 +2183,8 @@ async def sync_trades_with_broker(current_user: User = Depends(get_current_user)
                     current_price,
                     pnl,
                     floating_pnl,
-                    closed_at,
-                    close_reason,
+                    closed_at if our_status != 'closed' else order.get('filled_at'),
+                    close_reason if our_status != 'closed' else 'Position closed',
                     broker_order_id
                 ))
                 updated_count += 1
@@ -2321,6 +2465,198 @@ async def delete_signal(signal_id: int, current_user: User = Depends(get_current
             raise HTTPException(status_code=404, detail="Signal not found or cannot be deleted")
         conn.commit()
         return {"message": "Signal deleted"}
+    finally:
+        conn.close()
+
+@app.get("/api/positions")
+async def get_positions(current_user: User = Depends(get_current_user)):
+    """Get aggregated positions from Alpaca"""
+    # Get active account
+    account = await get_active_account(current_user)
+    if not account:
+        raise HTTPException(status_code=400, detail="No active trading account")
+    
+    # Get broker client
+    broker_client = get_broker_client(account)
+    if not broker_client:
+        raise HTTPException(status_code=400, detail="Failed to initialize broker client")
+    
+    try:
+        # Get positions from Alpaca
+        positions = await broker_client.get_positions()
+        
+        # Format positions for frontend
+        formatted_positions = []
+        for pos in positions:
+            # Calculate P&L
+            qty = float(pos.get('qty', 0))
+            avg_entry_price = float(pos.get('avg_entry_price', 0))
+            current_price = float(pos.get('current_price', 0))
+            market_value = float(pos.get('market_value', 0))
+            cost_basis = float(pos.get('cost_basis', 0))
+            
+            # Calculate unrealized P&L
+            unrealized_pnl = market_value - cost_basis
+            unrealized_pnl_pct = (unrealized_pnl / cost_basis * 100) if cost_basis > 0 else 0
+            
+            # Calculate today's P&L if available
+            change_today = float(pos.get('change_today', 0))
+            today_pnl = change_today * qty
+            today_pnl_pct = (change_today / (current_price - change_today) * 100) if (current_price - change_today) > 0 else 0
+            
+            formatted_positions.append({
+                'symbol': pos.get('symbol'),
+                'side': pos.get('side', 'long').upper(),
+                'quantity': qty,
+                'avg_entry_price': avg_entry_price,
+                'current_price': current_price,
+                'market_value': market_value,
+                'cost_basis': cost_basis,
+                'unrealized_pnl': unrealized_pnl,
+                'unrealized_pnl_pct': unrealized_pnl_pct,
+                'today_pnl': today_pnl,
+                'today_pnl_pct': today_pnl_pct,
+                'asset_class': pos.get('asset_class', 'us_equity'),
+                'exchange': pos.get('exchange', 'NASDAQ')
+            })
+        
+        return formatted_positions
+        
+    except Exception as e:
+        print(f"Error fetching positions: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/positions/sync")
+async def sync_positions(current_user: User = Depends(get_current_user)):
+    """Sync positions from Alpaca - similar to trades sync but for positions view"""
+    # Get active account
+    account = await get_active_account(current_user)
+    if not account:
+        raise HTTPException(status_code=400, detail="No active trading account")
+    
+    # Get broker client
+    broker_client = get_broker_client(account)
+    if not broker_client:
+        raise HTTPException(status_code=400, detail="Failed to initialize broker client")
+    
+    try:
+        # Get positions from Alpaca
+        positions = await broker_client.get_positions()
+        
+        # Update current prices for open trades in database
+        conn = get_db_connection()
+        try:
+            cursor = conn.cursor()
+            
+            for pos in positions:
+                symbol = pos.get('symbol')
+                current_price = float(pos.get('current_price', 0))
+                
+                # Update all open trades for this symbol with current price
+                cursor.execute("""
+                    UPDATE trades 
+                    SET current_price = %s,
+                        floating_pnl = CASE 
+                            WHEN action = 'BUY' THEN ((%s - entry_price) * quantity)
+                            ELSE ((entry_price - %s) * quantity)
+                        END
+                    WHERE symbol = %s 
+                    AND user_id = %s 
+                    AND account_id = %s 
+                    AND status = 'open'
+                """, (
+                    current_price, current_price, current_price,
+                    symbol, current_user.id, account.id
+                ))
+            
+            conn.commit()
+            
+            return {
+                "message": "Positions synced successfully",
+                "positions_count": len(positions)
+            }
+            
+        finally:
+            conn.close()
+            
+    except Exception as e:
+        print(f"Error syncing positions: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/trades/recalculate-pnl")
+async def recalculate_pnl(current_user: User = Depends(get_current_user)):
+    """Recalculate P&L for all trades based on position close notifications"""
+    # Get active account
+    account = await get_active_account(current_user)
+    if not account:
+        raise HTTPException(status_code=400, detail="No active trading account")
+    
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        
+        # Find all SELL trades that might be position closes
+        cursor.execute("""
+            SELECT t.id, t.symbol, t.quantity, t.broker_fill_price, t.broker_order_id
+            FROM trades t
+            WHERE t.user_id = %s 
+            AND t.account_id = %s 
+            AND t.action = 'SELL'
+            AND t.status = 'closed'
+        """, (current_user.id, account.id))
+        
+        sell_trades = cursor.fetchall()
+        recalculated_count = 0
+        
+        for sell_trade in sell_trades:
+            trade_id, symbol, sell_quantity, sell_price, broker_order_id = sell_trade
+            
+            # Check if we have position close notification
+            cursor.execute("""
+                SELECT data FROM trade_notifications 
+                WHERE trade_id = %s
+            """, (trade_id,))
+            
+            notifications = cursor.fetchall()
+            
+            for notification in notifications:
+                if notification[0]:
+                    notif_data = notification[0] if isinstance(notification[0], dict) else json.loads(notification[0])
+                    
+                    if notif_data.get('notification_type') in ['position_close_pending', 'position_close_completed']:
+                        positions_to_close = notif_data.get('positions_to_close', [])
+                        
+                        if positions_to_close:
+                            total_pnl = 0
+                            for pos in positions_to_close:
+                                pos_entry_price = float(pos['entry_price'])
+                                pos_close_quantity = float(pos['close_quantity'])
+                                # Calculate P&L for this portion
+                                pos_pnl = (float(sell_price) - pos_entry_price) * pos_close_quantity
+                                total_pnl += pos_pnl
+                            
+                            # Update the SELL trade with P&L
+                            cursor.execute("""
+                                UPDATE trades 
+                                SET pnl = %s,
+                                    exit_price = %s
+                                WHERE id = %s
+                            """, (total_pnl, sell_price, trade_id))
+                            
+                            recalculated_count += 1
+                            print(f"Recalculated P&L for trade {trade_id}: ${total_pnl:.2f}")
+        
+        conn.commit()
+        
+        return {
+            "message": "P&L recalculation completed",
+            "trades_updated": recalculated_count
+        }
+        
+    except Exception as e:
+        conn.rollback()
+        print(f"Error recalculating P&L: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
     finally:
         conn.close()
 
