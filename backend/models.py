@@ -126,7 +126,7 @@ class Trade(TradeBase):
     take_profit: Optional[Decimal] = None
     pnl: Optional[Decimal] = None
     floating_pnl: Optional[Decimal] = None
-    status: Literal["pending", "open", "closed", "cancelled"] = "pending"
+    status: Literal["pending", "filled", "closed", "cancelled"] = "pending"
     created_at: datetime
     opened_at: Optional[datetime] = None
     closed_at: Optional[datetime] = None

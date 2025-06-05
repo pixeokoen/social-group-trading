@@ -1,40 +1,108 @@
 <template>
   <div class="py-6">
     <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+      <!-- Header with Toolbar -->
       <div class="md:flex md:items-center md:justify-between">
         <h1 class="text-2xl font-semibold text-gray-900">Trades</h1>
-        <div class="mt-4 flex space-x-3 md:mt-0">
-          <button
-            @click="showCreateTradeModal"
-            class="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500"
-          >
-            <svg class="mr-2 h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
-            </svg>
-            Create Trade
-          </button>
-          <button
-            @click="syncTrades"
-            :disabled="syncing"
-            class="inline-flex items-center px-4 py-2 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500 disabled:opacity-50"
-          >
-            <svg 
-              :class="['mr-2 h-4 w-4', syncing ? 'animate-spin' : '']" 
-              fill="none" 
-              stroke="currentColor" 
-              viewBox="0 0 24 24"
-            >
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
-            </svg>
-            {{ syncing ? 'Syncing...' : 'Sync with Broker' }}
-          </button>
-          <span v-if="lastSync" class="text-sm text-gray-500 self-center">
-            Last sync: {{ formatTime(lastSync) }}
-          </span>
-          <span v-if="streamConnected" class="text-sm text-green-600 self-center flex items-center">
-            <span class="inline-block w-2 h-2 bg-green-600 rounded-full mr-1 animate-pulse"></span>
-            Real-time updates active
-          </span>
+        
+        <!-- Toolbar with filters and actions -->
+        <div class="mt-4 md:mt-0">
+          <div class="flex flex-col md:flex-row md:items-center space-y-3 md:space-y-0 md:space-x-4">
+            <!-- Filter and View Controls -->
+            <div class="flex items-center space-x-3">
+              <!-- Status Filter Dropdown -->
+              <div class="relative">
+                <label class="sr-only">Filter by status</label>
+                <div class="relative">
+                  <select 
+                    v-model="statusFilter" 
+                    @change="onStatusFilterChange"
+                    class="appearance-none bg-white border border-gray-300 rounded-lg px-4 py-2 pr-10 text-sm font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors duration-200"
+                  >
+                    <option value="all">All Trades</option>
+                    <option value="pending">Pending</option>
+                    <option value="filled">Filled</option>
+                    <option value="closed">Closed</option>
+                    <option value="cancelled">Cancelled</option>
+                  </select>
+                  <div class="absolute inset-y-0 right-0 flex items-center pr-3 pointer-events-none">
+                    <svg class="h-4 w-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                    </svg>
+                  </div>
+                </div>
+              </div>
+              
+              <!-- View Switcher -->
+              <div class="flex items-center bg-gray-100 rounded-lg p-1">
+                <button
+                  @click="currentView = 'list'"
+                  :class="[
+                    'px-3 py-1.5 text-sm font-medium rounded-md transition-colors duration-200',
+                    currentView === 'list' 
+                      ? 'bg-white text-gray-900 shadow-sm' 
+                      : 'text-gray-600 hover:text-gray-900'
+                  ]"
+                >
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 10h16M4 14h16M4 18h16"></path>
+                  </svg>
+                </button>
+                <button
+                  @click="currentView = 'grid'"
+                  :class="[
+                    'px-3 py-1.5 text-sm font-medium rounded-md transition-colors duration-200',
+                    currentView === 'grid' 
+                      ? 'bg-white text-gray-900 shadow-sm' 
+                      : 'text-gray-600 hover:text-gray-900'
+                  ]"
+                >
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"></path>
+                  </svg>
+                </button>
+              </div>
+            </div>
+            
+            <!-- Action Buttons -->
+            <div class="flex items-center space-x-3">
+              <button
+                @click="showCreateTradeModal"
+                class="inline-flex items-center px-4 py-2 border border-transparent rounded-lg shadow-sm text-sm font-medium text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 transition-colors duration-200"
+              >
+                <svg class="mr-2 h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+                </svg>
+                Create Trade
+              </button>
+              <button
+                @click="syncTrades"
+                :disabled="syncing"
+                class="inline-flex items-center px-4 py-2 border border-gray-300 rounded-lg shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 transition-colors duration-200"
+              >
+                <svg 
+                  :class="['mr-2 h-4 w-4', syncing ? 'animate-spin' : '']" 
+                  fill="none" 
+                  stroke="currentColor" 
+                  viewBox="0 0 24 24"
+                >
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
+                </svg>
+                {{ syncing ? 'Syncing...' : 'Sync with Broker' }}
+              </button>
+            </div>
+          </div>
+          
+          <!-- Status Info -->
+          <div v-if="lastSync || streamConnected" class="flex items-center space-x-4 mt-2 md:mt-3">
+            <span v-if="lastSync" class="text-sm text-gray-500">
+              Last sync: {{ formatTime(lastSync) }}
+            </span>
+            <span v-if="streamConnected" class="text-sm text-green-600 flex items-center">
+              <span class="inline-block w-2 h-2 bg-green-600 rounded-full mr-1 animate-pulse"></span>
+              Real-time updates active
+            </span>
+          </div>
         </div>
       </div>
       
@@ -61,8 +129,12 @@
         </div>
       </div>
       
+
+
+      <!-- Content Area -->
       <div class="mt-8">
-        <div class="flex flex-col">
+        <!-- List View -->
+        <div v-if="currentView === 'list'" class="flex flex-col">
           <div class="-my-2 overflow-x-auto sm:-mx-6 lg:-mx-8">
             <div class="py-2 align-middle inline-block min-w-full sm:px-6 lg:px-8">
               <div class="shadow overflow-hidden border-b border-gray-200 sm:rounded-lg">
@@ -117,7 +189,7 @@
                         ${{ formatPrice(trade.entry_price || trade.broker_fill_price) }}
                       </td>
                       <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                        <div v-if="trade.status === 'open' && trade.current_price">
+                        <div v-if="(trade.status === 'filled' || trade.status === 'open') && trade.current_price">
                           ${{ formatPrice(trade.current_price) }}
                         </div>
                         <div v-else-if="trade.exit_price">
@@ -129,7 +201,7 @@
                       </td>
                       <td class="px-6 py-4 whitespace-nowrap text-sm">
                         <span 
-                          v-if="trade.status === 'open' && trade.floating_pnl !== null && trade.floating_pnl !== undefined"
+                          v-if="(trade.status === 'filled' || trade.status === 'open') && trade.floating_pnl !== null && trade.floating_pnl !== undefined"
                           :class="trade.floating_pnl >= 0 ? 'text-green-600' : 'text-red-600'"
                         >
                           ${{ formatPrice(trade.floating_pnl) }}
@@ -147,6 +219,7 @@
                           :class="[
                             'px-2 inline-flex text-xs leading-5 font-semibold rounded-full',
                             trade.status === 'pending' ? 'bg-yellow-100 text-yellow-800' :
+                            trade.status === 'filled' ? 'bg-blue-100 text-blue-800' :
                             trade.status === 'open' ? 'bg-green-100 text-green-800' :
                             trade.status === 'closed' ? 'bg-gray-100 text-gray-800' :
                             'bg-red-100 text-red-800'
@@ -157,7 +230,7 @@
                       </td>
                       <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                         <button
-                          v-if="trade.status === 'open' && trade.action === 'BUY'"
+                          v-if="(trade.status === 'filled' || trade.status === 'open') && trade.action === 'BUY'"
                           @click="openCloseTradeModal(trade)"
                           class="inline-flex items-center px-3 py-1 border border-transparent text-sm rounded-md text-white bg-red-600 hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500"
                         >
@@ -174,6 +247,33 @@
                   <p class="text-gray-500">No trades yet</p>
                 </div>
               </div>
+            </div>
+          </div>
+        </div>
+        
+        <!-- Grid View -->
+        <div v-else-if="currentView === 'grid'" class="bg-gray-50 rounded-xl p-8">
+          <div class="text-center">
+            <div class="mx-auto w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center">
+              <svg class="w-8 h-8 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path>
+              </svg>
+            </div>
+            <h3 class="mt-4 text-lg font-medium text-gray-900">Grid View Coming Soon</h3>
+            <p class="mt-2 text-sm text-gray-500">
+              We're working on a beautiful grid view for your trades.<br/>
+              Stay tuned for this exciting new feature!
+            </p>
+            <div class="mt-6">
+              <button
+                @click="currentView = 'list'"
+                class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-blue-700 bg-blue-100 hover:bg-blue-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-colors duration-200"
+              >
+                <svg class="mr-2 h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 10h16M4 14h16M4 18h16"></path>
+                </svg>
+                Switch to List View
+              </button>
             </div>
           </div>
         </div>
@@ -199,7 +299,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, onMounted, onUnmounted, watch } from 'vue'
 import axios from '@/plugins/axios'
 import OrderConfirmModal from '@/components/OrderConfirmModal.vue'
 
@@ -231,6 +331,7 @@ interface Notification {
 }
 
 const trades = ref<Trade[]>([])
+const allTrades = ref<Trade[]>([]) // Store all trades for filtering
 const syncing = ref(false)
 const lastSync = ref<Date | null>(null)
 const notifications = ref<Notification[]>([])
@@ -239,8 +340,15 @@ const showCloseModal = ref(false)
 const selectedTrade = ref<any>(null)
 const showCreateModal = ref(false)
 const selectedTradeToCreate = ref<any>(null)
+const statusFilter = ref<string>('all')
+const currentView = ref<'list' | 'grid'>('list')
 let syncInterval: any = null
 let notificationInterval: any = null
+
+// Watch for view changes and save to localStorage
+watch(currentView, (newView) => {
+  localStorage.setItem('tradesCurrentView', newView)
+})
 
 const formatQuantity = (quantity: number | string) => {
   // Convert to number if it's a string
@@ -267,10 +375,25 @@ const formatTime = (date: Date) => {
 const fetchTrades = async () => {
   try {
     const response = await axios.get('/api/trades')
-    trades.value = response.data
+    allTrades.value = response.data
+    applyStatusFilter()
   } catch (error) {
     console.error('Error fetching trades:', error)
   }
+}
+
+const applyStatusFilter = () => {
+  if (statusFilter.value === 'all') {
+    trades.value = allTrades.value
+  } else {
+    trades.value = allTrades.value.filter(trade => trade.status === statusFilter.value)
+  }
+}
+
+const onStatusFilterChange = () => {
+  applyStatusFilter()
+  // Save filter to localStorage
+  localStorage.setItem('tradesStatusFilter', statusFilter.value)
 }
 
 const syncTrades = async () => {
@@ -411,6 +534,18 @@ const onTradeCreated = async (result: any) => {
 }
 
 onMounted(() => {
+  // Load saved filter from localStorage
+  const savedFilter = localStorage.getItem('tradesStatusFilter')
+  if (savedFilter) {
+    statusFilter.value = savedFilter
+  }
+  
+  // Load saved view from localStorage
+  const savedView = localStorage.getItem('tradesCurrentView')
+  if (savedView && (savedView === 'list' || savedView === 'grid')) {
+    currentView.value = savedView as 'list' | 'grid'
+  }
+  
   fetchTrades()
   
   // Check for notifications every 3 seconds

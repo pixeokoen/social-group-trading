@@ -7,11 +7,12 @@ import json
 import hashlib
 import hmac
 import os
-from decimal import Decimal
+from decimal import Decimal, ROUND_DOWN
 import secrets
 import asyncio
 from jose import JWTError, jwt
 from contextlib import asynccontextmanager
+from math import floor
 
 from models import (
     Signal, Trade, User, SignalCreate, TradeCreate, 
@@ -56,48 +57,129 @@ async def auto_sync_trades():
                         paper=(account[3] == 'paper')
                     )
                     
-                    # Sync trades for this account
+                    # Sync trades for this account - both pending and recently opened
                     cursor.execute("""
-                        SELECT id, broker_order_id, symbol
+                        SELECT id, broker_order_id, symbol, status
                         FROM trades 
                         WHERE account_id = %s 
-                        AND status = 'pending'
-                        AND broker_order_id IS NOT NULL
+                        AND (
+                            (status = 'pending' AND broker_order_id IS NOT NULL)
+                            OR (status = 'filled' AND broker_order_id IS NOT NULL AND created_at > NOW() - INTERVAL '5 minutes')
+                        )
                     """, (account[0],))
                     
                     pending_trades = cursor.fetchall()
                     
                     for trade in pending_trades:
                         try:
-                            # Get order status
-                            order_status = await client.get_order_status(trade[1])
+                            trade_id, broker_order_id, symbol, current_status = trade
+                            
+                            # Check if levels have already been processed for this trade
+                            cursor.execute("""
+                                SELECT COUNT(*) FROM take_profit_levels WHERE trade_id = %s
+                                UNION ALL
+                                SELECT COUNT(*) FROM stop_loss_levels WHERE trade_id = %s
+                            """, (trade_id, trade_id))
+                            level_counts = cursor.fetchall()
+                            tp_count = level_counts[0][0] if level_counts else 0
+                            sl_count = level_counts[1][0] if len(level_counts) > 1 else 0
+                            
+                            # Skip if BOTH take profit AND stop loss levels already exist
+                            # (Don't skip if only one type exists - we might need to process the other)
+                            if tp_count > 0 and sl_count > 0:
+                                continue
+                            
+                            # Get order status from broker
+                            order_status = await client.get_order_status(broker_order_id)
+                            
+                            # Process if order is filled OR if trade is already open (market orders)
+                            should_process = False
+                            fill_price = None
+                            filled_qty = None
                             
                             if order_status and order_status['status'] == 'filled':
-                                # Update trade with float conversion
+                                # Order just filled
                                 fill_price = float(order_status.get('filled_avg_price', 0))
-                                cursor.execute("""
-                                    UPDATE trades 
-                                    SET status = 'open',
-                                        broker_fill_price = %s,
-                                        entry_price = %s,
-                                        opened_at = %s
-                                    WHERE id = %s
-                                """, (
-                                    fill_price,
-                                    fill_price,
-                                    order_status.get('filled_at'),
-                                    trade[0]
-                                ))
+                                filled_qty = float(order_status.get('filled_qty', 0))
+                                should_process = True
                                 
-                                print(f"Auto-sync: Trade {trade[2]} filled at ${fill_price}")
+                                if current_status == 'pending':
+                                    # Update trade status
+                                    cursor.execute("""
+                                        UPDATE trades 
+                                        SET status = 'filled',
+                                            broker_fill_price = %s,
+                                            entry_price = %s,
+                                            quantity = %s,
+                                            opened_at = %s
+                                        WHERE id = %s
+                                    """, (
+                                        fill_price,
+                                        fill_price,
+                                        filled_qty,
+                                        order_status.get('filled_at'),
+                                        trade_id
+                                    ))
+                                    print(f"Auto-sync: Trade {symbol} filled at ${fill_price} - {filled_qty} shares")
+                            
+                            elif current_status == 'filled':
+                                # Trade already open (market order), get current trade data
+                                cursor.execute("""
+                                    SELECT entry_price, quantity FROM trades WHERE id = %s
+                                """, (trade_id,))
+                                trade_data = cursor.fetchone()
+                                if trade_data:
+                                    fill_price = float(trade_data[0])
+                                    filled_qty = float(trade_data[1])
+                                    should_process = True
+                                    print(f"Auto-sync: Processing levels for already-filled trade {symbol} at ${fill_price} - {filled_qty} shares")
+                            
+                            if should_process and fill_price and filled_qty:
+                                # Get signal data for processing take profit and stop loss levels
+                                cursor.execute("""
+                                    SELECT s.* FROM signals s
+                                    JOIN trades t ON t.signal_id = s.id
+                                    WHERE t.id = %s
+                                """, (trade_id,))
+                                signal_data = cursor.fetchone()
+                                
+                                if signal_data:
+                                    # Convert signal data to dict
+                                    signal_dict = dict(zip([desc[0] for desc in cursor.description], signal_data))
+                                    
+                                    # Check for custom levels in trade_notifications
+                                    cursor.execute("""
+                                        SELECT data FROM trade_notifications 
+                                        WHERE trade_id = %s AND data->>'notification_type' = 'custom_levels_pending'
+                                        ORDER BY created_at DESC LIMIT 1
+                                    """, (trade_id,))
+                                    custom_levels_row = cursor.fetchone()
+                                    custom_levels = None
+                                    
+                                    if custom_levels_row:
+                                        notification_data = custom_levels_row[0]
+                                        custom_levels = notification_data.get('custom_levels')
+                                    
+                                    # Process take profit and stop loss levels
+                                    try:
+                                        await process_trade_levels(trade_id, signal_dict, filled_qty, fill_price, cursor, custom_levels)
+                                        print(f"✅ Successfully processed levels for trade {trade_id}")
+                                    except Exception as level_error:
+                                        print(f"❌ ERROR processing levels for trade {trade_id}: {level_error}")
+                                        import traceback
+                                        traceback.print_exc()
                         except Exception as e:
-                            print(f"Error syncing trade {trade[0]}: {e}")
+                            print(f"Error syncing trade {trade_id if 'trade_id' in locals() else 'unknown'}: {e}")
                             continue
                             
                 except Exception as e:
                     print(f"Error syncing account {account[0]}: {e}")
             
             conn.commit()
+            
+            # NEW: Monitor and execute take profit/stop loss levels
+            await monitor_and_execute_levels(conn)
+            
             conn.close()
             
         except Exception as e:
@@ -105,14 +187,246 @@ async def auto_sync_trades():
             if 'conn' in locals():
                 conn.close()
         
-        # Wait 30 seconds before next sync
-        await asyncio.sleep(30)
+        # Wait 2 seconds before next sync (much faster monitoring)
+        await asyncio.sleep(2)
+
+async def monitor_and_execute_levels(conn):
+    """Monitor take profit and stop loss levels and execute them when prices hit"""
+    try:
+        cursor = conn.cursor()
+        
+        # Get all active levels grouped by account for efficient monitoring
+        cursor.execute("""
+            SELECT DISTINCT a.id, a.api_key, a.api_secret, a.account_type
+            FROM accounts a
+            WHERE a.is_active = TRUE 
+            AND a.broker = 'alpaca'
+            AND (
+                EXISTS (
+                    SELECT 1 FROM take_profit_levels tp 
+                    JOIN trades t ON tp.trade_id = t.id 
+                    WHERE t.account_id = a.id AND tp.status = 'pending' AND t.status = 'filled'
+                )
+                OR EXISTS (
+                    SELECT 1 FROM stop_loss_levels sl 
+                    JOIN trades t ON sl.trade_id = t.id 
+                    WHERE t.account_id = a.id AND sl.status = 'active' AND t.status = 'filled'
+                )
+            )
+        """)
+        
+        active_accounts = cursor.fetchall()
+        
+        for account in active_accounts:
+            try:
+                # Get broker client
+                client = AlpacaClient(
+                    api_key=account[1],
+                    secret_key=account[2],
+                    paper=(account[3] == 'paper')
+                )
+                
+                # Get take profit levels for this account
+                cursor.execute("""
+                    SELECT 
+                        tp.id, tp.trade_id, tp.level_number, tp.price, tp.shares_quantity,
+                        t.symbol, t.action, t.user_id
+                    FROM take_profit_levels tp
+                    JOIN trades t ON tp.trade_id = t.id
+                    WHERE t.account_id = %s 
+                    AND tp.status = 'pending'
+                    AND t.status = 'open'
+                    ORDER BY t.symbol, tp.level_number
+                """, (account[0],))
+                
+                tp_levels = cursor.fetchall()
+                
+                # Get stop loss levels for this account
+                cursor.execute("""
+                    SELECT 
+                        sl.id, sl.trade_id, sl.price, t.symbol, t.action, t.user_id, t.quantity
+                    FROM stop_loss_levels sl
+                    JOIN trades t ON sl.trade_id = t.id
+                    WHERE t.account_id = %s 
+                    AND sl.status = 'active'
+                    AND t.status = 'open'
+                """, (account[0],))
+                
+                sl_levels = cursor.fetchall()
+                
+                # Group levels by symbol to minimize API calls
+                symbols_to_check = set()
+                levels_by_symbol = {}
+                
+                # Process take profit levels
+                for tp in tp_levels:
+                    symbol = tp[5]
+                    symbols_to_check.add(symbol)
+                    if symbol not in levels_by_symbol:
+                        levels_by_symbol[symbol] = {'take_profit': [], 'stop_loss': []}
+                    
+                    levels_by_symbol[symbol]['take_profit'].append({
+                        'id': tp[0],
+                        'trade_id': tp[1],
+                        'level_number': tp[2],
+                        'price': float(tp[3]),
+                        'shares': float(tp[4]),
+                        'action': tp[6],
+                        'user_id': tp[7]
+                    })
+                
+                # Process stop loss levels
+                for sl in sl_levels:
+                    symbol = sl[3]
+                    symbols_to_check.add(symbol)
+                    if symbol not in levels_by_symbol:
+                        levels_by_symbol[symbol] = {'take_profit': [], 'stop_loss': []}
+                    
+                    # Calculate remaining shares (total - executed take profits)
+                    cursor.execute("""
+                        SELECT COALESCE(SUM(shares_quantity), 0) 
+                        FROM take_profit_levels 
+                        WHERE trade_id = %s AND status = 'executed'
+                    """, (sl[1],))
+                    executed_tp_shares = cursor.fetchone()[0] or 0
+                    remaining_shares = float(sl[6]) - float(executed_tp_shares)
+                    
+                    if remaining_shares > 0:
+                        levels_by_symbol[symbol]['stop_loss'].append({
+                            'id': sl[0],
+                            'trade_id': sl[1],
+                            'price': float(sl[2]),
+                            'shares': remaining_shares,
+                            'action': sl[4],
+                            'user_id': sl[5]
+                        })
+                
+                # Check prices and execute levels for each symbol
+                for symbol, levels in levels_by_symbol.items():
+                    try:
+                        # Get current price
+                        price_data = await client.get_latest_price(symbol)
+                        if not price_data or 'price' not in price_data:
+                            continue
+                        
+                        current_price = float(price_data['price'])
+                        
+                        # Check take profit levels
+                        for tp_level in levels['take_profit']:
+                            if should_execute_take_profit(tp_level, current_price):
+                                await execute_level_as_market_order(client, tp_level, current_price, 'take_profit', cursor)
+                        
+                        # Check stop loss levels
+                        for sl_level in levels['stop_loss']:
+                            if should_execute_stop_loss(sl_level, current_price):
+                                await execute_level_as_market_order(client, sl_level, current_price, 'stop_loss', cursor)
+                    
+                    except Exception as e:
+                        print(f"Error checking {symbol} for account {account[0]}: {e}")
+                        continue
+            
+            except Exception as e:
+                print(f"Error monitoring account {account[0]}: {e}")
+                continue
+    
+    except Exception as e:
+        print(f"Error in level monitoring: {e}")
+
+def should_execute_take_profit(level, current_price):
+    """Check if take profit should be executed"""
+    target_price = level['price']
+    action = level['action']
+    
+    # Take profit: sell when price reaches or exceeds target (for long positions)
+    if action.upper() == 'BUY':  # Long position
+        return current_price >= target_price
+    else:  # Short position
+        return current_price <= target_price
+
+def should_execute_stop_loss(level, current_price):
+    """Check if stop loss should be executed"""
+    target_price = level['price']
+    action = level['action']
+    
+    # Stop loss: sell when price drops to or below target (for long positions)
+    if action.upper() == 'BUY':  # Long position
+        return current_price <= target_price
+    else:  # Short position
+        return current_price >= target_price
+
+async def execute_level_as_market_order(client, level, current_price, level_type, cursor):
+    """Execute a take profit or stop loss level as a market order"""
+    try:
+        # Get symbol from level or fetch from database
+        if 'symbol' in level:
+            symbol = level['symbol']
+        else:
+            cursor.execute("SELECT symbol FROM trades WHERE id = %s", (level['trade_id'],))
+            symbol = cursor.fetchone()[0]
+        
+        shares = level['shares']
+        level_id = level['id']
+        trade_id = level['trade_id']
+        original_action = level['action']
+        
+        # Determine execution action (opposite of original trade)
+        execution_action = 'SELL' if original_action.upper() == 'BUY' else 'BUY'
+        
+        print(f"🎯 Executing {level_type} level {level_id}: {execution_action} {shares} {symbol} at ${current_price}")
+        
+        # Place market order for immediate execution
+        order_result = await client.place_order(
+            symbol=symbol,
+            qty=shares,
+            side=execution_action.lower(),
+            type='market',
+            time_in_force='day'
+        )
+        
+        if order_result and 'id' in order_result:
+            broker_order_id = order_result['id']
+            
+            # Update database with execution
+            if level_type == 'take_profit':
+                cursor.execute("""
+                    UPDATE take_profit_levels 
+                    SET status = 'executed',
+                        executed_at = %s,
+                        executed_price = %s,
+                        broker_order_id = %s
+                    WHERE id = %s
+                """, (datetime.utcnow(), current_price, broker_order_id, level_id))
+            
+            elif level_type == 'stop_loss':
+                cursor.execute("""
+                    UPDATE stop_loss_levels 
+                    SET status = 'executed',
+                        executed_at = %s,
+                        executed_price = %s,
+                        executed_shares = %s,
+                        broker_order_id = %s
+                    WHERE id = %s
+                """, (datetime.utcnow(), current_price, shares, broker_order_id, level_id))
+            
+            print(f"✅ {level_type.replace('_', ' ').title()} executed: {symbol} {shares} shares at ${current_price} (Order: {broker_order_id})")
+            
+            # TODO: Send notification to user
+            return True
+        else:
+            print(f"❌ Failed to execute {level_type} level {level_id}: Invalid order result")
+            return False
+            
+    except Exception as e:
+        print(f"❌ Error executing {level_type} level {level_id}: {e}")
+        return False
 
 # Lifespan context manager for background tasks
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
-    print("Starting background trade sync...")
+    print("Starting fast background trade monitoring (2s intervals)...")
+    print("🔄 Trade fill detection: 2 seconds")
+    print("🎯 Take profit/stop loss monitoring: 2 seconds") 
     task = asyncio.create_task(auto_sync_trades())
     
     yield
@@ -1037,6 +1351,10 @@ async def get_trades(
             trade_dict['signal_id'] = trade_dict.get('signal_id')
             trade_dict['close_reason'] = trade_dict.get('close_reason') or ''
             
+            # Convert legacy 'open' status to 'filled' for compatibility
+            if trade_dict.get('status') == 'open':
+                trade_dict['status'] = 'filled'
+            
             trades_list.append(Trade(**trade_dict))
         
         return trades_list
@@ -1083,12 +1401,16 @@ async def execute_trade(
             limit_price = order_params.get('limit_price')
             stop_price = order_params.get('stop_price')
             time_in_force = order_params.get('time_in_force', 'DAY')
+            custom_take_profit_levels = order_params.get('take_profit_levels', [])
+            custom_stop_loss_price = order_params.get('stop_loss_price')
         else:
             quantity = signal_dict.get('quantity') or 100
             order_type = 'LMT' if signal_dict.get('price') else 'MKT'
             limit_price = float(signal_dict['price']) if signal_dict.get('price') else None
             stop_price = float(signal_dict['stop_price']) if signal_dict.get('stop_price') else None
             time_in_force = 'DAY'
+            custom_take_profit_levels = []
+            custom_stop_loss_price = None
         
         # Ensure quantity is a float for fractional shares
         quantity = float(quantity)
@@ -1151,13 +1473,12 @@ async def execute_trade(
                 user_id, account_id, signal_id, symbol, action, quantity, 
                 entry_price, status, broker_order_id, created_at
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, 'pending', %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, 'pending', %s, %s)
             RETURNING id
         """, (
             current_user.id, account.id, signal_id, signal_dict['symbol'], 
             signal_dict['action'], quantity,
-            limit_price or estimated_price or 0, str(order_id), datetime.utcnow(),  # Ensure order_id is string
-            stop_price or estimated_price or 0, time_in_force.lower()
+            limit_price or estimated_price or 0, str(order_id), datetime.utcnow()
         ))
         
         trade_id = cursor.fetchone()[0]
@@ -1167,6 +1488,28 @@ async def execute_trade(
             "UPDATE signals SET status = 'executed', account_id = %s WHERE id = %s",
             (account.id, signal_id)
         )
+        
+        # If custom take profit/stop loss levels were provided, store them for later processing
+        if custom_take_profit_levels or custom_stop_loss_price:
+            custom_levels_data = {
+                'take_profit_levels': custom_take_profit_levels,
+                'stop_loss_price': custom_stop_loss_price
+            }
+            
+            # Store custom levels in trade_notifications for processing when order fills
+            cursor.execute("""
+                INSERT INTO trade_notifications (
+                    user_id, trade_id, data, created_at
+                )
+                VALUES (%s, %s, %s, %s)
+            """, (
+                current_user.id, trade_id, 
+                json.dumps({
+                    'notification_type': 'custom_levels_pending',
+                    'custom_levels': custom_levels_data
+                }),
+                datetime.utcnow()
+            ))
         
         conn.commit()
         
@@ -3273,6 +3616,320 @@ async def sync_dashboard(current_user: User = Depends(get_current_user)):
     except Exception as e:
         conn.rollback()
         print(f"Error syncing dashboard: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
+
+async def process_trade_levels(trade_id: int, signal_dict: dict, filled_quantity: float, filled_price: float, cursor, custom_levels: dict = None):
+    """
+    Process and save take profit and stop loss levels after trade execution.
+    
+    Args:
+        trade_id: The ID of the executed trade
+        signal_dict: The original signal data with enhanced_data
+        filled_quantity: The actual number of shares filled 
+        filled_price: The actual fill price
+        cursor: Database cursor
+    """
+    try:
+        print(f"🔄 Processing trade levels for trade {trade_id} - {filled_quantity} shares at ${filled_price}")
+        # Parse enhanced_data to get take profit levels and stop loss info
+        enhanced_data = signal_dict.get('enhanced_data')
+        if isinstance(enhanced_data, str):
+            enhanced_data = json.loads(enhanced_data)
+        elif not enhanced_data:
+            enhanced_data = {}
+        
+        # Process take profit levels - use custom levels if provided, otherwise use enhanced_data
+        custom_tp_levels = custom_levels.get('take_profit_levels', []) if custom_levels else []
+        take_profit_levels = enhanced_data.get('take_profit_levels', [])
+        
+        # Use custom levels if provided
+        if custom_tp_levels:
+            print(f"Processing {len(custom_tp_levels)} custom take profit levels for trade {trade_id}")
+            
+            # Calculate shares for each take profit level using custom percentages
+            total_shares_allocated = 0
+            levels_data = []
+            
+            for i, level in enumerate(custom_tp_levels):
+                tp_price = level.get('price', 0)
+                percentage = level.get('percentage', 0)
+                
+                if tp_price <= 0 or percentage <= 0:
+                    continue
+                
+                # Calculate shares for this level
+                level_shares = floor(filled_quantity * (percentage / 100) * 10000) / 10000  # Round down to 4 decimals
+                total_shares_allocated += level_shares
+                
+                levels_data.append({
+                    'level_number': i + 1,
+                    'price': float(tp_price),
+                    'percentage': percentage,
+                    'shares': level_shares
+                })
+                
+            # Adjust last level if needed to ensure exact total
+            if levels_data and abs(total_shares_allocated - filled_quantity) > 0.0001:
+                adjustment = filled_quantity - total_shares_allocated
+                levels_data[-1]['shares'] += adjustment
+                print(f"Adjusted last level by {adjustment} shares to match total")
+                
+        elif take_profit_levels and isinstance(take_profit_levels, list):
+            print(f"Processing {len(take_profit_levels)} default take profit levels for trade {trade_id}")
+            
+            # Calculate shares for each take profit level using equal distribution
+            total_shares_allocated = 0
+            levels_data = []
+            
+            for i, tp_price in enumerate(take_profit_levels):
+                # Default percentage distribution - equal percentages except last level gets remainder
+                if i < len(take_profit_levels) - 1:
+                    percentage = 100 / len(take_profit_levels)  # Equal distribution
+                else:
+                    # Last level gets remaining percentage to ensure 100% total
+                    percentage = 100 - sum(level['percentage'] for level in levels_data)
+                
+                # Calculate shares for this level (use floor to avoid over-allocation)
+                if i < len(take_profit_levels) - 1:
+                    level_shares = floor(filled_quantity * (percentage / 100) * 10000) / 10000  # Round down to 4 decimals
+                else:
+                    # Last level gets all remaining shares
+                    level_shares = filled_quantity - total_shares_allocated
+                
+                total_shares_allocated += level_shares
+                
+                levels_data.append({
+                    'level_number': i + 1,
+                    'price': float(tp_price),
+                    'percentage': percentage,
+                    'shares': level_shares
+                })
+            
+            # Verify total allocation equals filled quantity
+            if abs(total_shares_allocated - filled_quantity) > 0.0001:
+                print(f"Warning: Share allocation mismatch. Total: {total_shares_allocated}, Expected: {filled_quantity}")
+                # Adjust last level to match exactly
+                levels_data[-1]['shares'] = filled_quantity - sum(level['shares'] for level in levels_data[:-1])
+        
+        # Save take profit levels to database (works for both custom and default levels)
+        if 'levels_data' in locals() and levels_data:
+            # Check if take profit levels already exist
+            cursor.execute("SELECT COUNT(*) FROM take_profit_levels WHERE trade_id = %s", (trade_id,))
+            existing_tp_count = cursor.fetchone()[0]
+            
+            if existing_tp_count > 0:
+                print(f"Take profit levels already exist for trade {trade_id}, skipping...")
+            else:
+                for level_data in levels_data:
+                    try:
+                        cursor.execute("""
+                            INSERT INTO take_profit_levels (
+                                trade_id, level_number, price, percentage, shares_quantity, status, created_at
+                            )
+                            VALUES (%s, %s, %s, %s, %s, 'pending', %s)
+                        """, (
+                            trade_id,
+                            level_data['level_number'],
+                            level_data['price'],
+                            level_data['percentage'],
+                            level_data['shares'],
+                            datetime.utcnow()
+                        ))
+                        print(f"  - TP Level {level_data['level_number']}: ${level_data['price']} - {level_data['percentage']:.1f}% ({level_data['shares']} shares)")
+                    except Exception as e:
+                        print(f"    ✗ Error inserting TP Level {level_data['level_number']}: {e}")
+        
+        # Process stop loss level - use custom price if provided
+        custom_sl_price = custom_levels.get('stop_loss_price') if custom_levels else None
+        stop_loss_price = custom_sl_price or signal_dict.get('stop_loss') or enhanced_data.get('stop_loss')
+        if stop_loss_price:
+            try:
+                stop_loss_price = float(stop_loss_price)
+                if stop_loss_price > 0:
+                    # Check if stop loss already exists
+                    cursor.execute("SELECT COUNT(*) FROM stop_loss_levels WHERE trade_id = %s", (trade_id,))
+                    existing_sl_count = cursor.fetchone()[0]
+                    
+                    if existing_sl_count > 0:
+                        print(f"Stop loss level already exists for trade {trade_id}, skipping...")
+                    else:
+                        print(f"Processing stop loss at ${stop_loss_price} for trade {trade_id}")
+                        
+                        cursor.execute("""
+                            INSERT INTO stop_loss_levels (
+                                trade_id, price, status, created_at
+                            )
+                            VALUES (%s, %s, 'active', %s)
+                        """, (
+                            trade_id,
+                            stop_loss_price,
+                            datetime.utcnow()
+                        ))
+                        
+                        print(f"  - Stop Loss: ${stop_loss_price} (all remaining shares)")
+            except (ValueError, TypeError) as e:
+                print(f"Error processing stop loss price '{stop_loss_price}': {e}")
+            
+    except Exception as e:
+        print(f"Error processing trade levels for trade {trade_id}: {e}")
+        import traceback
+        traceback.print_exc()
+
+@app.get("/api/trades/{trade_id}/levels")
+async def get_trade_levels(trade_id: int, current_user: User = Depends(get_current_user)):
+    """Get take profit and stop loss levels for a trade"""
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        
+        # Verify the trade belongs to the user
+        cursor.execute("""
+            SELECT id FROM trades WHERE id = %s AND user_id = %s
+        """, (trade_id, current_user.id))
+        
+        if not cursor.fetchone():
+            raise HTTPException(status_code=404, detail="Trade not found")
+        
+        # Get take profit levels
+        cursor.execute("""
+            SELECT * FROM take_profit_levels 
+            WHERE trade_id = %s 
+            ORDER BY level_number ASC
+        """, (trade_id,))
+        
+        tp_levels = cursor.fetchall()
+        take_profit_levels = []
+        
+        for level in tp_levels:
+            take_profit_levels.append({
+                "id": level[0],
+                "level_number": level[2],
+                "price": float(level[3]),
+                "percentage": float(level[4]),
+                "shares_quantity": float(level[5]),
+                "status": level[6],
+                "executed_at": level[7],
+                "executed_price": float(level[8]) if level[8] else None,
+                "broker_order_id": level[9],
+                "created_at": level[10]
+            })
+        
+        # Get stop loss level
+        cursor.execute("""
+            SELECT * FROM stop_loss_levels 
+            WHERE trade_id = %s 
+            ORDER BY created_at DESC
+            LIMIT 1
+        """, (trade_id,))
+        
+        sl_data = cursor.fetchone()
+        stop_loss_level = None
+        
+        if sl_data:
+            stop_loss_level = {
+                "id": sl_data[0],
+                "price": float(sl_data[2]),
+                "status": sl_data[3],
+                "executed_at": sl_data[4],
+                "executed_price": float(sl_data[5]) if sl_data[5] else None,
+                "executed_shares": float(sl_data[6]) if sl_data[6] else None,
+                "broker_order_id": sl_data[7],
+                "created_at": sl_data[8]
+            }
+        
+        return {
+            "trade_id": trade_id,
+            "take_profit_levels": take_profit_levels,
+            "stop_loss_level": stop_loss_level
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting trade levels: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
+
+@app.get("/api/monitoring/levels")
+async def get_monitoring_levels(current_user: User = Depends(get_current_user)):
+    """Get all active take profit and stop loss levels for monitoring"""
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        
+        # Get all pending take profit levels for the user
+        cursor.execute("""
+            SELECT 
+                tp.id, tp.trade_id, tp.level_number, tp.price, tp.percentage, 
+                tp.shares_quantity, tp.status, t.symbol, t.action
+            FROM take_profit_levels tp
+            JOIN trades t ON tp.trade_id = t.id
+            WHERE t.user_id = %s AND tp.status = 'pending'
+            ORDER BY t.symbol, tp.level_number
+        """, (current_user.id,))
+        
+        tp_levels = cursor.fetchall()
+        take_profit_monitoring = []
+        
+        for level in tp_levels:
+            take_profit_monitoring.append({
+                "id": level[0],
+                "trade_id": level[1],
+                "level_number": level[2],
+                "price": float(level[3]),
+                "percentage": float(level[4]),
+                "shares_quantity": float(level[5]),
+                "status": level[6],
+                "symbol": level[7],
+                "action": level[8]
+            })
+        
+        # Get all active stop loss levels for the user
+        cursor.execute("""
+            SELECT 
+                sl.id, sl.trade_id, sl.price, sl.status, 
+                t.symbol, t.action, t.quantity
+            FROM stop_loss_levels sl
+            JOIN trades t ON sl.trade_id = t.id
+            WHERE t.user_id = %s AND sl.status = 'active'
+            ORDER BY t.symbol
+        """, (current_user.id,))
+        
+        sl_levels = cursor.fetchall()
+        stop_loss_monitoring = []
+        
+        for level in sl_levels:
+            # Calculate remaining shares (total shares minus executed take profit levels)
+            cursor.execute("""
+                SELECT COALESCE(SUM(shares_quantity), 0) as executed_shares
+                FROM take_profit_levels 
+                WHERE trade_id = %s AND status = 'executed'
+            """, (level[1],))
+            executed_tp_shares = cursor.fetchone()[0]
+            remaining_shares = float(level[6]) - float(executed_tp_shares)
+            
+            stop_loss_monitoring.append({
+                "id": level[0],
+                "trade_id": level[1],
+                "price": float(level[2]),
+                "status": level[3],
+                "symbol": level[4],
+                "action": level[5],
+                "remaining_shares": remaining_shares
+            })
+        
+        return {
+            "take_profit_levels": take_profit_monitoring,
+            "stop_loss_levels": stop_loss_monitoring,
+            "total_tp_levels": len(take_profit_monitoring),
+            "total_sl_levels": len(stop_loss_monitoring)
+        }
+        
+    except Exception as e:
+        print(f"Error getting monitoring levels: {e}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         conn.close()

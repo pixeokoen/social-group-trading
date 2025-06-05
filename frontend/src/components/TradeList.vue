@@ -19,7 +19,8 @@
             <span
               :class="[
                 'inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium',
-                trade.status === 'open' ? 'bg-blue-100 text-blue-800' :
+                trade.status === 'filled' ? 'bg-blue-100 text-blue-800' :
+                trade.status === 'open' ? 'bg-green-100 text-green-800' :
                 trade.status === 'closed' ? 'bg-gray-100 text-gray-800' :
                 trade.status === 'pending' ? 'bg-yellow-100 text-yellow-800' :
                 'bg-red-100 text-red-800'
@@ -44,7 +45,7 @@
                 P&L: {{ (trade.pnl || 0) >= 0 ? '+' : '' }}${{ trade.pnl ? Math.abs(trade.pnl).toFixed(2) : '0.00' }}
               </span>
               <span
-                v-else-if="trade.status === 'open' && trade.floating_pnl !== null && trade.floating_pnl !== undefined"
+                v-else-if="(trade.status === 'filled' || trade.status === 'open') && trade.floating_pnl !== null && trade.floating_pnl !== undefined"
                 :class="[
                   'text-sm font-medium',
                   (trade.floating_pnl || 0) >= 0 ? 'text-green-600' : 'text-red-600'
@@ -54,7 +55,7 @@
               </span>
             </div>
             <button
-              v-if="trade.status === 'open' && trade.action === 'BUY'"
+              v-if="(trade.status === 'filled' || trade.status === 'open') && trade.action === 'BUY'"
               @click="$emit('close', trade)"
               class="inline-flex items-center px-3 py-1 border border-transparent text-xs rounded-md text-white bg-red-600 hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500"
             >
@@ -121,7 +122,7 @@
               ${{ trade.entry_price || 0 }}
             </td>
             <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-              <div v-if="trade.status === 'open' && trade.current_price">
+              <div v-if="(trade.status === 'filled' || trade.status === 'open') && trade.current_price">
                 ${{ trade.current_price }}
               </div>
               <div v-else-if="trade.exit_price">
@@ -141,7 +142,7 @@
                   {{ (trade.pnl || 0) >= 0 ? '+' : '' }}${{ trade.pnl ? Math.abs(trade.pnl).toFixed(2) : '0.00' }}
                 </span>
                 <span
-                  v-else-if="trade.status === 'open' && trade.floating_pnl !== null && trade.floating_pnl !== undefined"
+                  v-else-if="(trade.status === 'filled' || trade.status === 'open') && trade.floating_pnl !== null && trade.floating_pnl !== undefined"
                   :class="[
                     'font-medium',
                     (trade.floating_pnl || 0) >= 0 ? 'text-green-600' : 'text-red-600'
@@ -157,7 +158,8 @@
               <span
                 :class="[
                   'inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium',
-                  trade.status === 'open' ? 'bg-blue-100 text-blue-800' :
+                  trade.status === 'filled' ? 'bg-blue-100 text-blue-800' :
+                  trade.status === 'open' ? 'bg-green-100 text-green-800' :
                   trade.status === 'closed' ? 'bg-gray-100 text-gray-800' :
                   trade.status === 'pending' ? 'bg-yellow-100 text-yellow-800' :
                   'bg-red-100 text-red-800'
@@ -168,7 +170,7 @@
             </td>
             <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
               <button
-                v-if="trade.status === 'open' && trade.action === 'BUY'"
+                v-if="(trade.status === 'filled' || trade.status === 'open') && trade.action === 'BUY'"
                 @click="$emit('close', trade)"
                 class="inline-flex items-center px-3 py-1 border border-transparent text-xs rounded-md text-white bg-red-600 hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500"
               >
@@ -203,7 +205,7 @@ interface Trade {
   current_price?: number
   pnl?: number
   floating_pnl?: number
-  status: 'pending' | 'open' | 'closed' | 'cancelled'
+  status: 'pending' | 'filled' | 'open' | 'closed' | 'cancelled'
   created_at?: string
   closed_at?: string
   close_reason?: string
