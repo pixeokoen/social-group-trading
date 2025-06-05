@@ -1300,7 +1300,11 @@ async def get_trades(
         
         # Load trades from LOCAL DATABASE (not from Alpaca)
         query = """
-            SELECT *, link_group_id FROM trades 
+            SELECT id, user_id, account_id, signal_id, symbol, action, quantity,
+                   entry_price, exit_price, current_price, stop_loss, take_profit,
+                   pnl, floating_pnl, status, broker_order_id, broker_fill_price,
+                   opened_at, closed_at, close_reason, created_at, link_group_id
+            FROM trades 
             WHERE user_id = %s AND account_id = %s
         """
         params = [current_user.id, account.id]
