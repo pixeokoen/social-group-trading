@@ -251,29 +251,94 @@
           </div>
         </div>
         
-        <!-- Grid View -->
-        <div v-else-if="currentView === 'grid'" class="bg-gray-50 rounded-xl p-8">
-          <div class="text-center">
-            <div class="mx-auto w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center">
-              <svg class="w-8 h-8 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path>
-              </svg>
-            </div>
-            <h3 class="mt-4 text-lg font-medium text-gray-900">Grid View Coming Soon</h3>
-            <p class="mt-2 text-sm text-gray-500">
-              We're working on a beautiful grid view for your trades.<br/>
-              Stay tuned for this exciting new feature!
-            </p>
-            <div class="mt-6">
-              <button
-                @click="currentView = 'list'"
-                class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-blue-700 bg-blue-100 hover:bg-blue-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-colors duration-200"
-              >
-                <svg class="mr-2 h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 10h16M4 14h16M4 18h16"></path>
+        <!-- Grid View - Open Positions Only -->
+        <div v-else-if="currentView === 'grid'">
+          <div v-if="openPositions.length === 0" class="bg-gray-50 rounded-xl p-8">
+            <div class="text-center">
+              <div class="mx-auto w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center">
+                <svg class="w-8 h-8 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v4"></path>
                 </svg>
-                Switch to List View
-              </button>
+              </div>
+              <h3 class="mt-4 text-lg font-medium text-gray-900">No Open Positions</h3>
+              <p class="mt-2 text-sm text-gray-500">
+                You don't have any open positions to display.<br/>
+                Open positions will appear here with live price tracking.
+              </p>
+            </div>
+          </div>
+          
+          <!-- Position Cards Grid -->
+          <div v-else class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+            <div 
+              v-for="position in openPositions" 
+              :key="position.id"
+              class="bg-white rounded-xl shadow-sm border border-gray-200 p-6 hover:shadow-md transition-shadow duration-200"
+            >
+              <!-- Header -->
+              <div class="flex items-center justify-between mb-4">
+                <div>
+                  <h3 class="text-lg font-semibold text-gray-900">{{ position.symbol }}</h3>
+                  <p class="text-sm text-gray-500">{{ formatQuantity(position.quantity) }} shares</p>
+                </div>
+                <div class="text-right">
+                  <span 
+                    :class="[
+                      'px-2 py-1 text-xs font-medium rounded-full',
+                      position.action === 'BUY' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
+                    ]"
+                  >
+                    {{ position.action }}
+                  </span>
+                </div>
+              </div>
+              
+              <!-- P&L Summary -->
+              <div class="mb-4 p-3 bg-gray-50 rounded-lg">
+                <div class="flex justify-between items-center">
+                  <span class="text-sm text-gray-600">P&L</span>
+                  <span 
+                    :class="[
+                      'text-sm font-medium',
+                      (position.floating_pnl || 0) >= 0 ? 'text-green-600' : 'text-red-600'
+                    ]"
+                  >
+                    ${{ formatPrice(position.floating_pnl || 0) }}
+                  </span>
+                </div>
+              </div>
+              
+              <!-- Thermometer Visualization -->
+              <div class="relative">
+                <!-- Price Scale Container -->
+                <div class="flex">
+                  <!-- Price Labels -->
+                  <div class="w-20 pr-2">
+                                         <TradingThermometer 
+                       :position="position"
+                       :entry-price="position.entry_price || position.broker_fill_price || 0"
+                       :current-price="position.current_price || 0"
+                       :stop-loss="position.stop_loss"
+                       :take-profit-levels="position.take_profit_levels || []"
+                       class="h-48"
+                     />
+                  </div>
+                </div>
+              </div>
+              
+              <!-- Action Button -->
+              <div class="mt-4 pt-4 border-t border-gray-100">
+                <button
+                  v-if="position.action === 'BUY'"
+                  @click="openCloseTradeModal(position)"
+                  class="w-full inline-flex items-center justify-center px-3 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-red-600 hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 transition-colors duration-200"
+                >
+                  <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M16 11V7a4 4 0 00-8 0v4M5 11h14l-1.68 9.39A2 2 0 0115.34 22H8.66a2 2 0 01-1.98-1.61L5 11z" />
+                  </svg>
+                  Close Position
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -299,9 +364,10 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, watch } from 'vue'
+import { ref, onMounted, onUnmounted, watch, computed } from 'vue'
 import axios from '@/plugins/axios'
 import OrderConfirmModal from '@/components/OrderConfirmModal.vue'
+import TradingThermometer from '@/components/TradingThermometer.vue'
 
 interface Trade {
   id: number
@@ -315,6 +381,20 @@ interface Trade {
   floating_pnl?: number
   pnl?: number
   status: string
+  stop_loss?: number
+  stop_loss_status?: string
+  stop_loss_executed_at?: string
+  stop_loss_executed_price?: number
+  take_profit_levels?: Array<{
+    id: number
+    level_number: number
+    price: number
+    percentage: number
+    shares_quantity: number
+    status: string
+    executed_at?: string
+    executed_price?: number
+  }>
   justUpdated?: boolean
 }
 
@@ -348,6 +428,13 @@ let notificationInterval: any = null
 // Watch for view changes and save to localStorage
 watch(currentView, (newView) => {
   localStorage.setItem('tradesCurrentView', newView)
+})
+
+// Computed property for open positions (grid view)
+const openPositions = computed(() => {
+  return allTrades.value.filter(trade => 
+    trade.status === 'filled' || trade.status === 'open'
+  )
 })
 
 const formatQuantity = (quantity: number | string) => {

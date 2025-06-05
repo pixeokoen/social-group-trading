@@ -1355,6 +1355,47 @@ async def get_trades(
             if trade_dict.get('status') == 'open':
                 trade_dict['status'] = 'filled'
             
+            # Fetch take profit and stop loss levels for this trade
+            trade_id = trade_dict['id']
+            
+            # Get take profit levels
+            cursor.execute("""
+                SELECT id, level_number, price, percentage, shares_quantity, status, executed_at, executed_price
+                FROM take_profit_levels 
+                WHERE trade_id = %s 
+                ORDER BY level_number
+            """, (trade_id,))
+            tp_levels = cursor.fetchall()
+            trade_dict['take_profit_levels'] = []
+            
+            for tp in tp_levels:
+                trade_dict['take_profit_levels'].append({
+                    'id': tp[0],
+                    'level_number': tp[1],
+                    'price': float(tp[2]) if tp[2] else 0,
+                    'percentage': float(tp[3]) if tp[3] else 0,
+                    'shares_quantity': float(tp[4]) if tp[4] else 0,
+                    'status': tp[5],
+                    'executed_at': tp[6],
+                    'executed_price': float(tp[7]) if tp[7] else None
+                })
+            
+            # Get stop loss levels
+            cursor.execute("""
+                SELECT id, price, status, executed_at, executed_price, executed_shares
+                FROM stop_loss_levels 
+                WHERE trade_id = %s 
+                ORDER BY created_at DESC
+                LIMIT 1
+            """, (trade_id,))
+            sl_level = cursor.fetchone()
+            
+            if sl_level:
+                trade_dict['stop_loss'] = float(sl_level[1]) if sl_level[1] else None
+                trade_dict['stop_loss_status'] = sl_level[2]
+                trade_dict['stop_loss_executed_at'] = sl_level[3]
+                trade_dict['stop_loss_executed_price'] = float(sl_level[4]) if sl_level[4] else None
+            
             trades_list.append(Trade(**trade_dict))
         
         return trades_list
