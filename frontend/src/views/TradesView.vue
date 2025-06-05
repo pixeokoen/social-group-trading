@@ -5,14 +5,13 @@
         <h1 class="text-2xl font-semibold text-gray-900">Trades</h1>
         <div class="mt-4 flex space-x-3 md:mt-0">
           <button
-            @click="importPositions"
-            :disabled="syncing"
-            class="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-primary-600 hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500 disabled:opacity-50"
+            @click="showCreateTradeModal"
+            class="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500"
           >
             <svg class="mr-2 h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path>
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
             </svg>
-            Import from Broker
+            Create Trade
           </button>
           <button
             @click="syncTrades"
@@ -83,7 +82,7 @@
                         Entry Price
                       </th>
                       <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Current Price
+                        Current/Exit
                       </th>
                       <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                         P&L
@@ -118,7 +117,15 @@
                         ${{ formatPrice(trade.entry_price || trade.broker_fill_price) }}
                       </td>
                       <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                        ${{ formatPrice(trade.current_price) }}
+                        <div v-if="trade.status === 'open' && trade.current_price">
+                          ${{ formatPrice(trade.current_price) }}
+                        </div>
+                        <div v-else-if="trade.exit_price">
+                          ${{ formatPrice(trade.exit_price) }}
+                        </div>
+                        <div v-else>
+                          ${{ formatPrice(trade.current_price) }}
+                        </div>
                       </td>
                       <td class="px-6 py-4 whitespace-nowrap text-sm">
                         <span 
@@ -152,9 +159,12 @@
                         <button
                           v-if="trade.status === 'open' && trade.action === 'BUY'"
                           @click="openCloseTradeModal(trade)"
-                          class="text-red-600 hover:text-red-900"
+                          class="inline-flex items-center px-3 py-1 border border-transparent text-sm rounded-md text-white bg-red-600 hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500"
                         >
-                          Close
+                          <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M16 11V7a4 4 0 00-8 0v4M5 11h14l-1.68 9.39A2 2 0 0115.34 22H8.66a2 2 0 01-1.98-1.61L5 11z" />
+                          </svg>
+                          Sell
                         </button>
                       </td>
                     </tr>
@@ -177,6 +187,14 @@
       @close="closeModal"
       @executed="onTradeExecuted"
     />
+    
+    <!-- Order Confirmation Modal for creating trades -->
+    <OrderConfirmModal
+      :signal="selectedTradeToCreate"
+      :is-open="showCreateModal"
+      @close="closeCreateModal"
+      @executed="onTradeCreated"
+    />
   </div>
 </template>
 
@@ -192,6 +210,7 @@ interface Trade {
   quantity: number
   entry_price?: number
   broker_fill_price?: number
+  exit_price?: number
   current_price?: number
   floating_pnl?: number
   pnl?: number
@@ -218,6 +237,8 @@ const notifications = ref<Notification[]>([])
 const streamConnected = ref(false)
 const showCloseModal = ref(false)
 const selectedTrade = ref<any>(null)
+const showCreateModal = ref(false)
+const selectedTradeToCreate = ref<any>(null)
 let syncInterval: any = null
 let notificationInterval: any = null
 
@@ -365,30 +386,28 @@ const onTradeExecuted = async (result: any) => {
   await fetchTrades()
 }
 
-const importPositions = async () => {
-  if (!confirm('Import all open positions from your broker account? This will add any positions not already tracked.')) {
-    return
+const showCreateTradeModal = () => {
+  // Create a new trade object for the modal
+  selectedTradeToCreate.value = {
+    id: 0, // 0 indicates this is a new order
+    symbol: '',
+    action: 'BUY',
+    quantity: 100, // Default quantity
+    source: 'manual_create'
   }
   
-  syncing.value = true
-  try {
-    const response = await axios.post('/api/trades/import-positions')
-    console.log('Import result:', response.data)
-    
-    if (response.data.positions_imported > 0) {
-      alert(`Imported ${response.data.positions_imported} new positions from broker`)
-    } else {
-      alert('No new positions to import')
-    }
-    
-    // Refresh trades after import
-    await fetchTrades()
-  } catch (error) {
-    console.error('Error importing positions:', error)
-    alert('Failed to import positions from broker')
-  } finally {
-    syncing.value = false
-  }
+  showCreateModal.value = true
+}
+
+const closeCreateModal = () => {
+  showCreateModal.value = false
+  selectedTradeToCreate.value = null
+}
+
+const onTradeCreated = async (result: any) => {
+  alert(`Trade created successfully! Order ID: ${result.broker_order_id}`)
+  await fetchTrades()
+  closeCreateModal()
 }
 
 onMounted(() => {

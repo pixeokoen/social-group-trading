@@ -35,7 +35,7 @@
           <div class="mt-2 flex items-center justify-between">
             <div>
               <span
-                v-if="(trade.action === 'SELL' && trade.status === 'closed' && trade.pnl !== null && trade.pnl !== undefined)"
+                v-if="trade.status === 'closed' && trade.pnl !== null && trade.pnl !== undefined"
                 :class="[
                   'text-sm font-medium',
                   (trade.pnl || 0) >= 0 ? 'text-green-600' : 'text-red-600'
@@ -44,7 +44,7 @@
                 P&L: {{ (trade.pnl || 0) >= 0 ? '+' : '' }}${{ trade.pnl ? Math.abs(trade.pnl).toFixed(2) : '0.00' }}
               </span>
               <span
-                v-else-if="trade.status === 'open' && trade.action === 'BUY' && trade.floating_pnl !== null && trade.floating_pnl !== undefined"
+                v-else-if="trade.status === 'open' && trade.floating_pnl !== null && trade.floating_pnl !== undefined"
                 :class="[
                   'text-sm font-medium',
                   (trade.floating_pnl || 0) >= 0 ? 'text-green-600' : 'text-red-600'
@@ -56,9 +56,12 @@
             <button
               v-if="trade.status === 'open' && trade.action === 'BUY'"
               @click="$emit('close', trade)"
-              class="text-xs text-red-600 hover:text-red-900"
+              class="inline-flex items-center px-3 py-1 border border-transparent text-xs rounded-md text-white bg-red-600 hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500"
             >
-              Close Trade
+              <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M16 11V7a4 4 0 00-8 0v4M5 11h14l-1.68 9.39A2 2 0 0115.34 22H8.66a2 2 0 01-1.98-1.61L5 11z" />
+              </svg>
+              Sell
             </button>
           </div>
         </li>
@@ -127,26 +130,28 @@
               <div v-else>-</div>
             </td>
             <td class="px-6 py-4 whitespace-nowrap text-sm font-medium">
-              <span
-                v-if="(trade.action === 'SELL' && trade.status === 'closed' && trade.pnl !== null && trade.pnl !== undefined)"
-                :class="[
-                  'font-medium',
-                  (trade.pnl || 0) >= 0 ? 'text-green-600' : 'text-red-600'
-                ]"
-              >
-                {{ (trade.pnl || 0) >= 0 ? '+' : '' }}${{ trade.pnl ? Math.abs(trade.pnl).toFixed(2) : '0.00' }}
-              </span>
-              <span
-                v-else-if="trade.status === 'open' && trade.action === 'BUY' && trade.floating_pnl !== null && trade.floating_pnl !== undefined"
-                :class="[
-                  'font-medium',
-                  (trade.floating_pnl || 0) >= 0 ? 'text-green-600' : 'text-red-600'
-                ]"
-              >
-                {{ (trade.floating_pnl || 0) >= 0 ? '+' : '' }}${{ trade.floating_pnl ? Math.abs(trade.floating_pnl).toFixed(2) : '0.00' }}
-                <span class="text-xs text-gray-400 ml-1">(Float)</span>
-              </span>
-              <span v-else class="text-gray-400">-</span>
+              <div>
+                <span
+                  v-if="trade.status === 'closed' && trade.pnl !== null && trade.pnl !== undefined"
+                  :class="[
+                    'font-medium',
+                    (trade.pnl || 0) >= 0 ? 'text-green-600' : 'text-red-600'
+                  ]"
+                >
+                  {{ (trade.pnl || 0) >= 0 ? '+' : '' }}${{ trade.pnl ? Math.abs(trade.pnl).toFixed(2) : '0.00' }}
+                </span>
+                <span
+                  v-else-if="trade.status === 'open' && trade.floating_pnl !== null && trade.floating_pnl !== undefined"
+                  :class="[
+                    'font-medium',
+                    (trade.floating_pnl || 0) >= 0 ? 'text-green-600' : 'text-red-600'
+                  ]"
+                >
+                  {{ (trade.floating_pnl || 0) >= 0 ? '+' : '' }}${{ trade.floating_pnl ? Math.abs(trade.floating_pnl).toFixed(2) : '0.00' }}
+                  <span class="text-xs text-gray-400 ml-1">(Float)</span>
+                </span>
+                <span v-else class="text-gray-400">-</span>
+              </div>
             </td>
             <td class="px-6 py-4 whitespace-nowrap">
               <span
@@ -165,9 +170,12 @@
               <button
                 v-if="trade.status === 'open' && trade.action === 'BUY'"
                 @click="$emit('close', trade)"
-                class="text-red-600 hover:text-red-900"
+                class="inline-flex items-center px-3 py-1 border border-transparent text-xs rounded-md text-white bg-red-600 hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500"
               >
-                Close
+                <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M16 11V7a4 4 0 00-8 0v4M5 11h14l-1.68 9.39A2 2 0 0115.34 22H8.66a2 2 0 01-1.98-1.61L5 11z" />
+                </svg>
+                Sell
               </button>
               <span v-else-if="trade.close_reason" class="text-xs text-gray-400">
                 {{ trade.close_reason }}

@@ -6,7 +6,7 @@ import os
 from typing import Dict, Optional, List, Any
 from decimal import Decimal
 from alpaca.trading.client import TradingClient
-from alpaca.trading.requests import MarketOrderRequest, LimitOrderRequest, GetOrdersRequest
+from alpaca.trading.requests import MarketOrderRequest, LimitOrderRequest, StopOrderRequest, StopLimitOrderRequest, GetOrdersRequest
 from alpaca.trading.enums import OrderSide, TimeInForce, OrderStatus
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockLatestQuoteRequest, StockLatestTradeRequest
@@ -96,7 +96,7 @@ class AlpacaClient:
     
     async def place_order(self, symbol: str, action: str, quantity: float, 
                          order_type: str = "market", limit_price: float = None,
-                         time_in_force: str = "day") -> str:
+                         stop_price: float = None, time_in_force: str = "day") -> str:
         """Place an order with Alpaca"""
         try:
             # Convert action to OrderSide enum
@@ -116,7 +116,7 @@ class AlpacaClient:
             
             print(f"Placing order: {symbol} {action} {quantity} shares, type={order_type}, fractional={is_fractional}")
             
-            # Create market order request
+            # Create order request based on type
             if order_type.lower() == "market":
                 if is_fractional:
                     # For fractional orders, we can use notional (dollar amount) or qty
@@ -133,7 +133,7 @@ class AlpacaClient:
                         side=side,
                         time_in_force=tif
                     )
-            else:  # Limit order
+            elif order_type.lower() == "limit":
                 # Fractional limit orders are supported by Alpaca
                 order_request = LimitOrderRequest(
                     symbol=symbol,
@@ -142,6 +142,27 @@ class AlpacaClient:
                     time_in_force=tif,
                     limit_price=limit_price
                 )
+            elif order_type.lower() == "stop":
+                # Stop order - becomes market order when stop price is reached
+                order_request = StopOrderRequest(
+                    symbol=symbol,
+                    qty=quantity if is_fractional else int(quantity),
+                    side=side,
+                    time_in_force=tif,
+                    stop_price=stop_price
+                )
+            elif order_type.lower() == "stop_limit":
+                # Stop-limit order - becomes limit order when stop price is reached
+                order_request = StopLimitOrderRequest(
+                    symbol=symbol,
+                    qty=quantity if is_fractional else int(quantity),
+                    side=side,
+                    time_in_force=tif,
+                    stop_price=stop_price,
+                    limit_price=limit_price
+                )
+            else:
+                raise ValueError(f"Unsupported order type: {order_type}")
             
             # Submit order
             order = self.trading_client.submit_order(order_request)

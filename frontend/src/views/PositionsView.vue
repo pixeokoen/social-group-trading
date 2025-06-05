@@ -46,8 +46,11 @@
                   <button
                     v-if="position.side === 'LONG'"
                     @click="openClosePositionModal(position)"
-                    class="text-red-600 hover:text-red-900 text-sm font-medium"
+                    class="inline-flex items-center px-3 py-1 border border-transparent text-sm rounded-md text-white bg-red-600 hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500"
                   >
+                    <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M16 11V7a4 4 0 00-8 0v4M5 11h14l-1.68 9.39A2 2 0 0115.34 22H8.66a2 2 0 01-1.98-1.61L5 11z" />
+                    </svg>
                     Sell
                   </button>
                 </div>
@@ -185,8 +188,11 @@
                           <button
                             v-if="position.side === 'LONG'"
                             @click="openClosePositionModal(position)"
-                            class="text-red-600 hover:text-red-900"
+                            class="inline-flex items-center px-3 py-1 border border-transparent text-sm rounded-md text-white bg-red-600 hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500"
                           >
+                            <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                              <path stroke-linecap="round" stroke-linejoin="round" d="M16 11V7a4 4 0 00-8 0v4M5 11h14l-1.68 9.39A2 2 0 0115.34 22H8.66a2 2 0 01-1.98-1.61L5 11z" />
+                            </svg>
                             Sell
                           </button>
                         </td>
