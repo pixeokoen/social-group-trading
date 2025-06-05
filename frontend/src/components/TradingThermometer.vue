@@ -1,12 +1,48 @@
 <template>
   <div class="trading-thermometer h-full flex items-center">
     <!-- Price Labels (Left Side) -->
-    <div class="flex flex-col justify-between h-full w-16 text-xs text-gray-600 pr-2">
-      <!-- Take Profit Levels (Top) -->
-      <div v-for="(tp, index) in sortedTakeProfitLevels" :key="`tp-${index}`" class="text-right">
+    <div class="flex flex-col justify-start h-full w-16 text-xs text-gray-600 pr-2 relative">
+      <!-- Stop Loss (Bottom) -->
+      <div 
+        v-if="stopLoss" 
+        class="absolute text-right w-full"
+        :style="{ bottom: `${stopLossPosition}%` }"
+      >
         <div 
           :class="[
-            'font-medium',
+            'font-medium text-xs',
+            position.stop_loss_status === 'executed' ? 'text-gray-500 line-through' : 'text-red-600'
+          ]"
+        >
+          ${{ formatPrice(stopLoss) }}
+        </div>
+        <div class="text-xs text-gray-500">
+          STOP
+          <span v-if="position.stop_loss_status === 'executed'" class="text-red-600">✓</span>
+        </div>
+      </div>
+      
+      <!-- Entry Price (Zero Level) -->
+      <div 
+        class="absolute text-right w-full"
+        :style="{ bottom: `${entryLinePosition}%` }"
+      >
+        <div class="font-medium text-xs text-gray-900 bg-gray-100 px-1 rounded">
+          ${{ formatPrice(entryPrice) }}
+        </div>
+        <div class="text-xs text-gray-500">ENTRY</div>
+      </div>
+      
+      <!-- Take Profit Levels -->
+      <div 
+        v-for="(tp, index) in sortedTakeProfitLevels" 
+        :key="`tp-${index}`" 
+        class="absolute text-right w-full"
+        :style="{ bottom: `${getTakeProfitPosition(tp)}%` }"
+      >
+        <div 
+          :class="[
+            'font-medium text-xs',
             tp.status === 'executed' ? 'text-gray-500 line-through' : 'text-green-600'
           ]"
         >
@@ -20,72 +56,58 @@
       
       <!-- Current Price (Moving) -->
       <div 
-        class="text-right transition-all duration-500 ease-in-out"
-        :style="{ transform: `translateY(${currentPriceOffset}px)` }"
+        class="absolute text-right w-full transition-all duration-500 ease-in-out z-30"
+        :style="{ 
+          bottom: `${currentPricePosition}%`,
+          transform: `translateY(${currentPriceOffset}px)` 
+        }"
       >
-        <div class="font-semibold text-blue-600 bg-blue-50 px-1 rounded">
+        <div class="font-semibold text-xs text-blue-600 bg-blue-50 px-1 rounded shadow">
           ${{ formatPrice(currentPrice) }}
         </div>
-        <div class="text-xs text-blue-500">CURRENT</div>
-      </div>
-      
-      <!-- Entry Price (Zero Level) -->
-      <div class="text-right">
-        <div class="font-medium text-gray-900 bg-gray-100 px-1 rounded">
-          ${{ formatPrice(entryPrice) }}
-        </div>
-        <div class="text-xs text-gray-500">ENTRY</div>
-      </div>
-      
-      <!-- Stop Loss (Bottom) -->
-      <div v-if="stopLoss" class="text-right">
-        <div 
-          :class="[
-            'font-medium',
-            position.stop_loss_status === 'executed' ? 'text-gray-500 line-through' : 'text-red-600'
-          ]"
-        >
-          ${{ formatPrice(stopLoss) }}
-        </div>
-        <div class="text-xs text-gray-500">
-          STOP
-          <span v-if="position.stop_loss_status === 'executed'" class="text-red-600">✓</span>
-        </div>
+        <div class="text-xs text-blue-500">NOW</div>
       </div>
     </div>
     
     <!-- Thermometer Bar -->
     <div class="relative w-6 h-full bg-gray-200 rounded-full overflow-hidden">
-      <!-- Background Segments -->
-      
-      <!-- Loss Area (Red - Below Entry) -->
+      <!-- Red Area (Loss - Below Entry) -->
       <div 
-        class="absolute bottom-0 w-full bg-red-200 transition-all duration-300"
-        :style="{ height: `${lossAreaHeight}%` }"
+        class="absolute bottom-0 w-full bg-red-300 transition-all duration-300"
+        :style="{ height: `${entryLinePosition}%` }"
       ></div>
       
-      <!-- Profit Areas (Green - Above Entry) -->
+      <!-- Green Area (Profit - Above Entry) -->
       <div 
-        v-for="(tp, index) in sortedTakeProfitLevels" 
-        :key="`area-${index}`"
-        class="absolute w-full transition-all duration-300"
-        :class="[
-          tp.status === 'executed' ? 'bg-gray-300' : (
-            index === 0 ? 'bg-green-200' : 
-            index === 1 ? 'bg-green-300' : 
-            index === 2 ? 'bg-green-400' : 'bg-green-500'
-          )
-        ]"
+        class="absolute w-full bg-green-300 transition-all duration-300"
         :style="{ 
-          bottom: `${getTakeProfitHeight(index).bottom}%`, 
-          height: `${getTakeProfitHeight(index).height}%` 
+          bottom: `${entryLinePosition}%`,
+          height: `${100 - entryLinePosition}%`
         }"
       ></div>
       
-      <!-- Entry Price Line (Zero Level) -->
+      <!-- Horizontal Lines for Levels -->
+      
+      <!-- Stop Loss Line -->
       <div 
-        class="absolute w-full h-0.5 bg-gray-800 z-10"
+        v-if="stopLoss && stopLossPosition >= 0"
+        class="absolute w-full h-0.5 bg-red-700 z-10"
+        :style="{ bottom: `${stopLossPosition}%` }"
+      ></div>
+      
+      <!-- Entry Price Line (Bold - Zero Level) -->
+      <div 
+        class="absolute w-full h-1 bg-gray-900 z-10"
         :style="{ bottom: `${entryLinePosition}%` }"
+      ></div>
+      
+      <!-- Take Profit Lines -->
+      <div 
+        v-for="tp in sortedTakeProfitLevels" 
+        :key="`line-${tp.id}`"
+        class="absolute w-full h-0.5 z-10 transition-all duration-300"
+        :class="tp.status === 'executed' ? 'bg-gray-600' : 'bg-green-700'"
+        :style="{ bottom: `${getTakeProfitPosition(tp)}%` }"
       ></div>
       
       <!-- Current Price Indicator (Moving) -->
@@ -96,13 +118,6 @@
         <!-- Animated pulse -->
         <div class="absolute inset-0 bg-blue-400 rounded-full animate-pulse opacity-75"></div>
       </div>
-      
-      <!-- Stop Loss Line -->
-      <div 
-        v-if="stopLoss && stopLossPosition >= 0"
-        class="absolute w-full h-0.5 bg-red-600 z-10"
-        :style="{ bottom: `${stopLossPosition}%` }"
-      ></div>
     </div>
   </div>
 </template>
@@ -136,33 +151,28 @@ const priceRange = computed(() => {
   const hasLevels = props.takeProfitLevels.length > 0 || props.stopLoss
   
   if (hasLevels) {
-    // Scenario 2: Scale based on actual levels
-    const prices = [props.entryPrice, props.currentPrice]
+    // Scale from stop loss (bottom) to highest take profit (top)
+    const allPrices = [props.entryPrice]
     
-    if (props.stopLoss) prices.push(props.stopLoss)
-    props.takeProfitLevels.forEach(tp => prices.push(tp.price))
+    if (props.stopLoss) allPrices.push(props.stopLoss)
+    props.takeProfitLevels.forEach(tp => allPrices.push(tp.price))
     
-    const minPrice = Math.min(...prices)
-    const maxPrice = Math.max(...prices)
-    const padding = (maxPrice - minPrice) * 0.15 // 15% padding for margins
+    const minPrice = Math.min(...allPrices)
+    const maxPrice = Math.max(...allPrices)
+    const range = maxPrice - minPrice
+    const padding = range * 0.1 // 10% padding
     
     return {
       min: minPrice - padding,
       max: maxPrice + padding,
-      range: (maxPrice - minPrice) + (padding * 2)
+      range: range + (padding * 2)
     }
   } else {
-    // Scenario 1: Simple thermometer with entry at 1/3 from bottom
-    const priceDiff = Math.abs(props.currentPrice - props.entryPrice)
-    const range = Math.max(priceDiff * 4, props.entryPrice * 0.2) // At least 20% of entry price
-    
-    // Entry at 1/3 from bottom means 2/3 above, 1/3 below
-    const bottomSpace = range * 0.33
-    const topSpace = range * 0.67
-    
+    // Simple view: entry in middle, space above and below
+    const range = Math.max(Math.abs(props.currentPrice - props.entryPrice) * 3, props.entryPrice * 0.2)
     return {
-      min: props.entryPrice - bottomSpace,
-      max: props.entryPrice + topSpace,
+      min: props.entryPrice - range * 0.4,
+      max: props.entryPrice + range * 0.6,
       range: range
     }
   }
@@ -184,16 +194,18 @@ const stopLossPosition = computed(() => {
   return ((props.stopLoss - min) / range) * 100
 })
 
-const lossAreaHeight = computed(() => {
-  if (!props.stopLoss) return entryLinePosition.value
-  return Math.max(0, entryLinePosition.value - stopLossPosition.value)
-})
+
 
 const sortedTakeProfitLevels = computed(() => {
   return [...props.takeProfitLevels]
     .filter(tp => tp.status === 'pending')
     .sort((a, b) => a.level_number - b.level_number)
 })
+
+const getTakeProfitPosition = (tp: any) => {
+  const { min, range } = priceRange.value
+  return ((tp.price - min) / range) * 100
+}
 
 const getTakeProfitHeight = (index: number) => {
   const levels = sortedTakeProfitLevels.value
