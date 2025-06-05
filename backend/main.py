@@ -1300,7 +1300,7 @@ async def get_trades(
         
         # Load trades from LOCAL DATABASE (not from Alpaca)
         query = """
-            SELECT * FROM trades 
+            SELECT *, link_group_id FROM trades 
             WHERE user_id = %s AND account_id = %s
         """
         params = [current_user.id, account.id]
@@ -2881,6 +2881,111 @@ async def sync_trades_with_broker(current_user: User = Depends(get_current_user)
     except Exception as e:
         conn.rollback()
         print(f"Error syncing trades: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
+
+@app.post("/api/trades/link")
+async def link_trades(
+    trade_ids: List[int],
+    current_user: User = Depends(get_current_user)
+):
+    """Link multiple trades together with a common group ID"""
+    import uuid
+    
+    if len(trade_ids) < 2:
+        raise HTTPException(status_code=400, detail="At least 2 trades are required for linking")
+    
+    # Get active account
+    account = await get_active_account(current_user)
+    if not account:
+        raise HTTPException(status_code=400, detail="No active trading account")
+    
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        
+        # Verify all trades belong to current user and account
+        cursor.execute("""
+            SELECT id, symbol, action, quantity, status 
+            FROM trades 
+            WHERE id = ANY(%s) AND user_id = %s AND account_id = %s
+        """, (trade_ids, current_user.id, account.id))
+        
+        trades = cursor.fetchall()
+        if len(trades) != len(trade_ids):
+            raise HTTPException(status_code=404, detail="Some trades not found or don't belong to current user")
+        
+        # Generate a new link group ID
+        link_group_id = str(uuid.uuid4())
+        
+        # Link all trades
+        cursor.execute("""
+            UPDATE trades 
+            SET link_group_id = %s 
+            WHERE id = ANY(%s)
+        """, (link_group_id, trade_ids))
+        
+        conn.commit()
+        
+        return {
+            "message": f"Successfully linked {len(trade_ids)} trades",
+            "link_group_id": link_group_id,
+            "trades": [
+                {
+                    "id": trade[0],
+                    "symbol": trade[1], 
+                    "action": trade[2],
+                    "quantity": float(trade[3]),
+                    "status": trade[4]
+                } 
+                for trade in trades
+            ]
+        }
+        
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
+
+@app.post("/api/trades/unlink")
+async def unlink_trades(
+    trade_ids: List[int],
+    current_user: User = Depends(get_current_user)
+):
+    """Unlink trades by removing their link group ID"""
+    # Get active account
+    account = await get_active_account(current_user)
+    if not account:
+        raise HTTPException(status_code=400, detail="No active trading account")
+    
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        
+        # Verify trades belong to current user and account
+        cursor.execute("""
+            SELECT COUNT(*) FROM trades 
+            WHERE id = ANY(%s) AND user_id = %s AND account_id = %s
+        """, (trade_ids, current_user.id, account.id))
+        
+        if cursor.fetchone()[0] != len(trade_ids):
+            raise HTTPException(status_code=404, detail="Some trades not found or don't belong to current user")
+        
+        # Unlink trades
+        cursor.execute("""
+            UPDATE trades 
+            SET link_group_id = NULL 
+            WHERE id = ANY(%s)
+        """, (trade_ids,))
+        
+        conn.commit()
+        
+        return {"message": f"Successfully unlinked {len(trade_ids)} trades"}
+        
+    except Exception as e:
+        conn.rollback()
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         conn.close()

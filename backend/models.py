@@ -133,6 +133,7 @@ class Trade(TradeBase):
     broker_order_id: Optional[str] = None
     broker_fill_price: Optional[Decimal] = None
     close_reason: Optional[str] = None
+    link_group_id: Optional[str] = None
     
     class Config:
         from_attributes = True

@@ -236,16 +236,128 @@
           <!-- Middle Column - Trading Levels -->
           <div class="h-full flex flex-col space-y-3">
             <!-- Take Profit Levels Zone (Top) -->
-            <div class="flex-1 bg-green-50 border-2 border-dashed border-green-200 rounded-lg p-6 flex items-center justify-center min-h-[200px]">
-              <div class="text-center">
-                <div class="mb-3">
-                  <svg class="h-8 w-8 mx-auto text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <div class="flex-1 bg-green-50 border border-green-200 rounded-lg p-4 min-h-[200px] flex flex-col">
+              <!-- Header with Add Button -->
+              <div class="flex items-center justify-between mb-4">
+                <h5 class="text-sm font-medium text-green-800 flex items-center">
+                  <svg class="h-4 w-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
                   </svg>
+                  Take Profit Levels
+                </h5>
+                <button
+                  @click="addTakeProfitLevel"
+                  class="w-8 h-8 bg-green-600 hover:bg-green-700 text-white rounded-md flex items-center justify-center focus:outline-none focus:ring-2 focus:ring-green-500"
+                  title="Add Level"
+                >
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+                  </svg>
+                </button>
+              </div>
+
+              <!-- Levels Container (Stack from bottom up) -->
+              <div class="flex-1 flex flex-col-reverse space-y-reverse space-y-2">
+                <!-- No levels message -->
+                <div v-if="takeProfitLevels.length === 0" class="flex-1 flex items-center justify-center">
+                  <div class="text-center text-green-600">
+                    <svg class="h-8 w-8 mx-auto mb-2 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
+                    </svg>
+                    <p class="text-xs">Click + to add profit levels</p>
+                  </div>
                 </div>
-                <h5 class="text-sm font-medium text-green-800 mb-2">Take Profit Levels</h5>
-                <p class="text-xs text-green-600">Add multiple profit targets</p>
-                <p class="text-xs text-green-500 mt-1">(Coming Soon)</p>
+
+                <!-- Level Bars -->
+                <div
+                  v-for="(level, index) in sortedTakeProfitLevels"
+                  :key="level.id"
+                  class="bg-green-100 border border-green-300 rounded-md p-2 shadow-sm"
+                >
+                  <div class="flex items-center justify-between w-full">
+                    <div class="flex items-center space-x-2 flex-1">
+                      <!-- Price Input -->
+                      <div class="w-20">
+                        <div class="flex items-center">
+                          <span class="text-green-600 text-sm mr-1">$</span>
+                          <input
+                            v-model.number="level.price"
+                            @input="validateLevelPrices"
+                            type="number"
+                            step="0.01"
+                            min="0.01"
+                            placeholder="0.00"
+                            class="w-full px-1 py-1 text-sm border border-green-300 rounded focus:ring-green-500 focus:border-green-500 bg-white"
+                          />
+                        </div>
+                      </div>
+
+                      <!-- Percentage/Shares Input -->
+                      <div class="w-16 flex items-center">
+                        <!-- Bottom level (lowest price) shows calculated value -->
+                        <div v-if="isBottomLevel(level)" class="w-full px-2 py-1 text-sm bg-green-200 border border-green-300 rounded text-green-800 font-medium text-center">
+                          {{ formatLevelValue(level.calculatedValue) }}{{ orderForm.amountType === 'dollars' ? '%' : '' }}
+                        </div>
+                        
+                        <!-- Other levels have input -->
+                        <input
+                          v-else
+                          v-model.number="level.percentage"
+                          @input="recalculateBottomLevel"
+                          type="number"
+                          :min="orderForm.amountType === 'dollars' ? 1 : 0.01"
+                          :max="orderForm.amountType === 'dollars' ? getMaxPercentage(level) : getMaxShares(level)"
+                          :step="orderForm.amountType === 'dollars' ? 1 : 0.01"
+                          class="w-full px-1 py-1 text-sm border border-green-300 rounded focus:ring-green-500 focus:border-green-500 bg-white"
+                        />
+                      </div>
+                      
+                      <span v-if="orderForm.amountType === 'dollars'" class="text-green-600 text-sm">%</span>
+                      
+                      <!-- +/- buttons (only for non-bottom levels) -->
+                      <div v-if="!isBottomLevel(level)" class="flex space-x-1">
+                        <button
+                          @click="adjustLevelValue(level, false)"
+                          class="w-6 h-6 bg-green-600 hover:bg-green-700 text-white text-xs rounded focus:outline-none flex items-center justify-center"
+                          title="Decrease"
+                        >
+                          -
+                        </button>
+                        <button
+                          @click="adjustLevelValue(level, true)"
+                          class="w-6 h-6 bg-green-600 hover:bg-green-700 text-white text-xs rounded focus:outline-none flex items-center justify-center"
+                          title="Increase"
+                        >
+                          +
+                        </button>
+                      </div>
+                    </div>
+                    
+                    <!-- Delete Button (far right) -->
+                    <button
+                      @click="removeTakeProfitLevel(level.id)"
+                      class="w-6 h-6 text-red-600 hover:text-red-800 focus:outline-none flex items-center justify-center ml-2"
+                      title="Delete Level"
+                    >
+                      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                      </svg>
+                    </button>
+                  </div>
+                  
+                  <!-- Live calculation display below -->
+                  <div v-if="orderForm.amountType === 'dollars'" class="text-xs text-green-600 mt-1 text-center">
+                    <span v-if="isBottomLevel(level)">
+                      ${{ (orderForm.dollarAmount * level.calculatedValue / 100).toFixed(2) }}
+                    </span>
+                    <span v-else>
+                      ${{ (orderForm.dollarAmount * (level.percentage || 0) / 100).toFixed(2) }}
+                    </span>
+                  </div>
+                  <div v-else-if="orderForm.amountType === 'shares' && level.percentage > 0" class="text-xs text-green-600 mt-1 text-center">
+                    {{ level.percentage }} shares
+                  </div>
+                </div>
               </div>
             </div>
             
@@ -447,6 +559,184 @@ const orderForm = ref({
   stop_loss_price: 0.00
 })
 
+// Take Profit Levels Management
+interface TakeProfitLevel {
+  id: number
+  price: number
+  percentage: number
+  calculatedValue: number
+}
+
+const takeProfitLevels = ref<TakeProfitLevel[]>([])
+let levelIdCounter = 1
+
+// Add a new take profit level
+const addTakeProfitLevel = () => {
+  const newLevel: TakeProfitLevel = {
+    id: levelIdCounter++,
+    price: 0,
+    percentage: orderForm.value.amountType === 'dollars' ? 10 : 1,
+    calculatedValue: 0
+  }
+  takeProfitLevels.value.push(newLevel)
+  // Trigger recalculation after adding
+  setTimeout(() => recalculateBottomLevel(), 0)
+}
+
+// Remove a take profit level
+const removeTakeProfitLevel = (levelId: number) => {
+  takeProfitLevels.value = takeProfitLevels.value.filter(level => level.id !== levelId)
+  // Trigger recalculation after removing
+  setTimeout(() => recalculateBottomLevel(), 0)
+}
+
+// Get sorted levels by price (ascending = bottom to top display)
+const sortedTakeProfitLevels = computed(() => {
+  return [...takeProfitLevels.value].sort((a, b) => a.price - b.price)
+})
+
+// Check if a level is the bottom level (lowest price)
+const isBottomLevel = (level: TakeProfitLevel) => {
+  if (takeProfitLevels.value.length === 0) return false
+  if (takeProfitLevels.value.length === 1) return true
+  
+  // Get all levels with valid prices (> 0)
+  const levelsWithPrice = takeProfitLevels.value.filter(l => l.price > 0)
+  
+  // If no levels have prices set yet, the first level added should be bottom
+  if (levelsWithPrice.length === 0) {
+    return takeProfitLevels.value[0].id === level.id
+  }
+  
+  // If only one level has a price, it's the bottom
+  if (levelsWithPrice.length === 1) {
+    return levelsWithPrice[0].id === level.id
+  }
+  
+  // If this level doesn't have a price, it's not the bottom
+  if (level.price <= 0) return false
+  
+  // Find the actual lowest price among levels with prices
+  const lowestPrice = Math.min(...levelsWithPrice.map(l => l.price))
+  return level.price === lowestPrice
+}
+
+// Recalculate the bottom level's percentage/shares
+const recalculateBottomLevel = () => {
+  if (takeProfitLevels.value.length === 0) return
+  
+  // For single level, it should always be 100% (or total shares)
+  if (takeProfitLevels.value.length === 1) {
+    const singleLevel = takeProfitLevels.value[0]
+    if (orderForm.value.amountType === 'dollars') {
+      singleLevel.calculatedValue = 100
+    } else {
+      singleLevel.calculatedValue = orderForm.value.quantity
+    }
+    return
+  }
+  
+  // For multiple levels, find the bottom level
+  const levelsWithPrice = takeProfitLevels.value.filter(l => l.price > 0)
+  
+  let bottomLevel
+  if (levelsWithPrice.length === 0) {
+    // No prices set yet, use first level as bottom
+    bottomLevel = takeProfitLevels.value[0]
+  } else if (levelsWithPrice.length === 1) {
+    // Only one level has price, it's the bottom
+    bottomLevel = levelsWithPrice[0]
+  } else {
+    // Multiple levels with prices, find lowest price
+    bottomLevel = levelsWithPrice.reduce((min, level) => 
+      level.price < min.price ? level : min
+    )
+  }
+  
+  if (orderForm.value.amountType === 'dollars') {
+    // Calculate remaining percentage for bottom level
+    const otherLevelsSum = takeProfitLevels.value
+      .filter(l => l.id !== bottomLevel.id)
+      .reduce((sum, level) => sum + (level.percentage || 0), 0)
+    bottomLevel.calculatedValue = Math.max(0, 100 - otherLevelsSum)
+  } else {
+    // Calculate remaining shares for bottom level
+    const otherLevelsSum = takeProfitLevels.value
+      .filter(l => l.id !== bottomLevel.id)
+      .reduce((sum, level) => sum + (level.percentage || 0), 0)
+    bottomLevel.calculatedValue = Math.max(0, orderForm.value.quantity - otherLevelsSum)
+  }
+}
+
+// Adjust level value with +/- buttons (increments of 10 for percentage)
+const adjustLevelValue = (level: TakeProfitLevel, increase: boolean) => {
+  if (isBottomLevel(level)) return // Bottom level is calculated, not adjustable
+  
+  if (orderForm.value.amountType === 'dollars') {
+    // Percentage mode: increment/decrement by 10
+    const currentValue = level.percentage || 0
+    let newValue: number
+    
+    if (increase) {
+      // Smart increment: 8->10, 10->20, 20->30, etc.
+      if (currentValue < 10) {
+        newValue = 10
+      } else {
+        newValue = Math.ceil(currentValue / 10) * 10 + 10
+      }
+    } else {
+      // Smart decrement: 40->30, 30->20, 20->10, 10->0, etc.
+      if (currentValue <= 10) {
+        newValue = 0
+      } else {
+        newValue = Math.floor(currentValue / 10) * 10 - 10
+      }
+    }
+    
+    // Ensure we don't exceed the maximum allowed or go below 0
+    const maxValue = getMaxPercentage(level)
+    level.percentage = Math.min(maxValue, Math.max(0, newValue))
+  } else {
+    // Shares mode: increment by 1 or appropriate step
+    const currentValue = level.percentage || 0
+    const step = canTradeFractional.value ? 0.1 : 1
+    const newValue = increase ? currentValue + step : currentValue - step
+    const maxValue = getMaxShares(level)
+    level.percentage = Math.min(maxValue, Math.max(0.01, newValue))
+  }
+  
+  recalculateBottomLevel()
+}
+
+// Get maximum percentage a level can have
+const getMaxPercentage = (level: TakeProfitLevel) => {
+  const otherLevels = takeProfitLevels.value.filter(l => l.id !== level.id && !isBottomLevel(l))
+  const otherLevelsSum = otherLevels.reduce((sum, l) => sum + (l.percentage || 0), 0)
+  return Math.max(1, 100 - otherLevelsSum)
+}
+
+// Get maximum shares a level can have
+const getMaxShares = (level: TakeProfitLevel) => {
+  const otherLevels = takeProfitLevels.value.filter(l => l.id !== level.id && !isBottomLevel(l))
+  const otherLevelsSum = otherLevels.reduce((sum, l) => sum + (l.percentage || 0), 0)
+  return Math.max(0.01, orderForm.value.quantity - otherLevelsSum)
+}
+
+// Format level value for display
+const formatLevelValue = (value: number) => {
+  if (orderForm.value.amountType === 'dollars') {
+    return value.toFixed(1)
+  } else {
+    return canTradeFractional.value ? value.toFixed(4) : value.toFixed(0)
+  }
+}
+
+// Validate that level prices are in correct order
+const validateLevelPrices = () => {
+  // Automatically recalculate when prices change
+  setTimeout(() => recalculateBottomLevel(), 0)
+}
+
 const validating = ref(false)
 const executing = ref(false)
 const validationResult = ref<any>(null)
@@ -571,6 +861,64 @@ watch(() => props.signal, (newSignal) => {
       orderForm.value.stop_loss_price = 0.00
     }
     
+    // Reset take profit levels when signal changes
+    takeProfitLevels.value = []
+    levelIdCounter = 1
+    
+    // Pre-fill take profit levels if converting from a signal (has signal data)
+    if (newSignal.id > 0 && newSignal.enhanced_data) {
+      // Use setTimeout to ensure the levels are created after the DOM updates
+      setTimeout(() => {
+        try {
+          // Parse enhanced_data to get take profit levels
+          const enhancedData = typeof newSignal.enhanced_data === 'string' 
+            ? JSON.parse(newSignal.enhanced_data) 
+            : newSignal.enhanced_data
+          
+          // Look for take_profit_levels array in enhanced data
+          if (enhancedData.take_profit_levels && Array.isArray(enhancedData.take_profit_levels)) {
+            const profitLevels = enhancedData.take_profit_levels
+            console.log('Found take profit levels from analysis:', profitLevels)
+            
+            // Create a level for each profit target
+            profitLevels.forEach((_price: any, _index: number) => {
+              addTakeProfitLevel()
+            })
+            
+            // Wait for levels to be created, then set prices and percentages
+            setTimeout(() => {
+              profitLevels.forEach((price: any, index: number) => {
+                if (takeProfitLevels.value[index]) {
+                  takeProfitLevels.value[index].price = Number(price)
+                  // Set 10% for all levels except the last one (which gets calculated remainder)
+                  if (index < profitLevels.length - 1) {
+                    takeProfitLevels.value[index].percentage = 10
+                  }
+                }
+              })
+              
+              // Recalculate to set the bottom level percentage
+              recalculateBottomLevel()
+              console.log('Pre-filled', profitLevels.length, 'take profit levels')
+            }, 50)
+                     } else if (newSignal.take_profit && typeof newSignal.take_profit === 'number') {
+             // Fallback: if no enhanced data levels but has single take_profit
+             addTakeProfitLevel()
+             setTimeout(() => {
+               if (takeProfitLevels.value.length > 0) {
+                 takeProfitLevels.value[0].price = newSignal.take_profit as number
+                 takeProfitLevels.value[0].percentage = 10
+                 recalculateBottomLevel()
+               }
+             }, 50)
+           }
+        } catch (error) {
+          console.error('Error parsing enhanced_data for take profit levels:', error)
+          console.log('Enhanced data:', newSignal.enhanced_data)
+        }
+      }, 50)
+    }
+    
     // Clear previous validation results
     validationResult.value = null
     
@@ -600,6 +948,19 @@ watch(() => orderForm.value.amountType, () => {
       calculateDollarsFromQuantity()
     }
   }
+  
+  // Recalculate take profit levels when switching amount types
+  recalculateBottomLevel()
+})
+
+// Watch for dollar amount changes to recalculate take profit levels
+watch(() => orderForm.value.dollarAmount, () => {
+  recalculateBottomLevel()
+})
+
+// Watch for quantity changes to recalculate take profit levels  
+watch(() => orderForm.value.quantity, () => {
+  recalculateBottomLevel()
 })
 
 const calculateQuantityFromDollars = () => {
@@ -763,7 +1124,9 @@ const executeOrder = async () => {
           order_type: orderForm.value.order_type,
           limit_price: orderForm.value.limit_price,
           stop_price: orderForm.value.stop_price,
-          time_in_force: orderForm.value.time_in_force
+          time_in_force: orderForm.value.time_in_force,
+          take_profit_levels: takeProfitLevels.value.filter(level => level.price > 0),
+          stop_loss_price: orderForm.value.stop_loss_price
         })
         emit('executed', response.data)
         close()
@@ -776,7 +1139,9 @@ const executeOrder = async () => {
         order_type: orderForm.value.order_type,
         limit_price: orderForm.value.limit_price,
         stop_price: orderForm.value.stop_price,
-        time_in_force: orderForm.value.time_in_force
+        time_in_force: orderForm.value.time_in_force,
+        take_profit_levels: takeProfitLevels.value.filter(level => level.price > 0),
+        stop_loss_price: orderForm.value.stop_loss_price
       })
       emit('executed', response.data)
       close()

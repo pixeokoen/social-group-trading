@@ -128,8 +128,60 @@
           </div>
         </div>
       </div>
-      
 
+      <!-- Trade Linking Toolbar (appears when trades are selected) -->
+      <div 
+        v-if="selectedTrades.size > 0" 
+        class="bg-blue-50 border border-blue-200 rounded-lg p-4 mt-4 transition-all duration-300"
+      >
+        <div class="flex items-center justify-between">
+          <div class="flex items-center space-x-4">
+            <span class="text-blue-800 font-medium">
+              {{ selectedTrades.size }} trade{{ selectedTrades.size !== 1 ? 's' : '' }} selected
+            </span>
+            <button
+              @click="selectAll"
+              class="text-blue-600 hover:text-blue-800 text-sm font-medium"
+            >
+              Select All
+            </button>
+            <button
+              @click="clearSelection"
+              class="text-gray-600 hover:text-gray-800 text-sm font-medium"
+            >
+              Clear Selection
+            </button>
+          </div>
+          
+          <div class="flex items-center space-x-3">
+            <button
+              @click="linkSelectedTrades"
+              :disabled="selectedTrades.size < 2 || linkingTrades"
+              class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center space-x-2"
+            >
+              <svg v-if="linkingTrades" class="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+              </svg>
+              <svg v-else class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"></path>
+              </svg>
+              <span>Link Trades</span>
+            </button>
+            
+            <button
+              @click="unlinkSelectedTrades"
+              :disabled="linkingTrades"
+              class="bg-gray-600 text-white px-4 py-2 rounded-lg hover:bg-gray-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center space-x-2"
+            >
+              <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"></path>
+              </svg>
+              <span>Unlink</span>
+            </button>
+          </div>
+        </div>
+      </div>
 
       <!-- Content Area -->
       <div class="mt-8">
@@ -141,6 +193,15 @@
                 <table class="min-w-full divide-y divide-gray-200">
                   <thead class="bg-gray-50">
                     <tr>
+                      <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        <input 
+                          type="checkbox" 
+                          class="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                          :checked="selectedTrades.size === trades.length && trades.length > 0"
+                          :indeterminate="selectedTrades.size > 0 && selectedTrades.size < trades.length"
+                          @change="selectedTrades.size === trades.length ? clearSelection() : selectAll()"
+                        />
+                      </th>
                       <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                         Symbol
                       </th>
@@ -169,6 +230,22 @@
                   </thead>
                   <tbody class="bg-white divide-y divide-gray-200">
                     <tr v-for="trade in trades" :key="trade.id" :class="{ 'bg-yellow-50': trade.justUpdated }">
+                      <td class="px-6 py-4 whitespace-nowrap">
+                        <div class="flex items-center">
+                          <input 
+                            type="checkbox" 
+                            class="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                            :checked="selectedTrades.has(trade.id)"
+                            @change="toggleTradeSelection(trade.id)"
+                          />
+                          <!-- Link group indicator -->
+                          <div v-if="trade.link_group_id" class="ml-2">
+                            <svg class="h-4 w-4 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"></path>
+                            </svg>
+                          </div>
+                        </div>
+                      </td>
                       <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
                         {{ trade.symbol }}
                       </td>
@@ -396,6 +473,7 @@ interface Trade {
     executed_price?: number
   }>
   justUpdated?: boolean
+  link_group_id?: string
 }
 
 interface Notification {
@@ -422,6 +500,8 @@ const showCreateModal = ref(false)
 const selectedTradeToCreate = ref<any>(null)
 const statusFilter = ref<string>('all')
 const currentView = ref<'list' | 'grid'>('list')
+const selectedTrades = ref<Set<number>>(new Set())
+const linkingTrades = ref(false)
 let syncInterval: any = null
 let notificationInterval: any = null
 
@@ -457,6 +537,76 @@ const formatTime = (date: Date) => {
     minute: '2-digit',
     second: '2-digit'
   }).format(date)
+}
+
+// Trade selection functions
+const toggleTradeSelection = (tradeId: number) => {
+  if (selectedTrades.value.has(tradeId)) {
+    selectedTrades.value.delete(tradeId)
+  } else {
+    selectedTrades.value.add(tradeId)
+  }
+}
+
+const clearSelection = () => {
+  selectedTrades.value.clear()
+}
+
+const selectAll = () => {
+  trades.value.forEach(trade => {
+    selectedTrades.value.add(trade.id)
+  })
+}
+
+// Trade linking functions
+const linkSelectedTrades = async () => {
+  if (selectedTrades.value.size < 2) {
+    alert('Please select at least 2 trades to link')
+    return
+  }
+  
+  try {
+    linkingTrades.value = true
+    const tradeIds = Array.from(selectedTrades.value)
+    
+    const response = await axios.post('/api/trades/link', tradeIds)
+    
+    // Refresh trades to show the linking
+    await fetchTrades()
+    clearSelection()
+    
+    alert(`Successfully linked ${tradeIds.length} trades`)
+  } catch (error) {
+    console.error('Error linking trades:', error)
+    alert('Error linking trades')
+  } finally {
+    linkingTrades.value = false
+  }
+}
+
+const unlinkSelectedTrades = async () => {
+  if (selectedTrades.value.size === 0) {
+    alert('Please select trades to unlink')
+    return
+  }
+  
+  try {
+    linkingTrades.value = true
+    const tradeIds = Array.from(selectedTrades.value)
+    
+    await axios.post('/api/trades/unlink', tradeIds)
+    
+    // Refresh trades to show the unlinking
+    await fetchTrades()
+    clearSelection()
+    
+    alert(`Successfully unlinked ${tradeIds.length} trades`)
+  } catch (error) {
+    console.error('Error unlinking trades:', error)
+    alert('Error unlinking trades')
+  } finally {
+    linkingTrades.value = false
+  }
 }
 
 const fetchTrades = async () => {
