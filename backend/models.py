@@ -59,6 +59,9 @@ class Account(AccountBase):
     id: int
     user_id: int
     created_at: datetime
+    realized_pnl: Optional[Decimal] = 0
+    realized_pnl_updated_at: Optional[datetime] = None
+    win_rate: Optional[float] = 0
     
     class Config:
         from_attributes = True
@@ -84,6 +87,7 @@ class SignalBase(BaseModel):
     original_message: Optional[str] = None
     remarks: Optional[str] = None
     analysis_notes: Optional[str] = None
+    enhanced_data: Optional[Dict[str, Any]] = None
 
 class SignalCreate(SignalBase):
     pass

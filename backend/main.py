@@ -659,6 +659,7 @@ async def validate_order(
         quantity = order_params.get('quantity', signal_dict.get('quantity') or 100)
         order_type = order_params.get('order_type', 'MARKET')
         limit_price = order_params.get('limit_price')
+        stop_price = order_params.get('stop_price')
         time_in_force = order_params.get('time_in_force', 'DAY')
         
         # Ensure quantity is a float for fractional shares
@@ -679,11 +680,18 @@ async def validate_order(
                 "symbol_info": None
             }
         
-        # Calculate estimated cost
+        # Calculate estimated cost based on order type
         if order_type == 'MARKET':
             estimated_price = market_data.get('last', 0)
-        else:
+        elif order_type == 'LIMIT':
             estimated_price = float(limit_price) if limit_price else market_data.get('last', 0)
+        elif order_type == 'STOP':
+            estimated_price = float(stop_price) if stop_price else market_data.get('last', 0)
+        elif order_type == 'STOP_LIMIT':
+            # For stop-limit, use limit price for cost estimation
+            estimated_price = float(limit_price) if limit_price else market_data.get('last', 0)
+        else:
+            estimated_price = market_data.get('last', 0)
         
         estimated_cost = quantity * estimated_price
         
@@ -701,6 +709,7 @@ async def validate_order(
                 "quantity": quantity,
                 "order_type": order_type,
                 "limit_price": limit_price,
+                "stop_price": stop_price,
                 "time_in_force": time_in_force,
                 "estimated_price": estimated_price,
                 "estimated_cost": estimated_cost,
@@ -765,6 +774,7 @@ async def validate_market_order(
     quantity = float(order_params.get('quantity', 0))
     order_type = order_params.get('order_type', 'MARKET').upper()
     limit_price = order_params.get('limit_price')
+    stop_price = order_params.get('stop_price')
     
     errors = []
     warnings = []
@@ -776,6 +786,10 @@ async def validate_market_order(
         errors.append("Quantity must be greater than 0")
     if order_type == 'LIMIT' and not limit_price:
         errors.append("Limit price is required for limit orders")
+    if order_type == 'STOP' and not stop_price:
+        errors.append("Stop price is required for stop orders")
+    if order_type == 'STOP_LIMIT' and (not stop_price or not limit_price):
+        errors.append("Both stop price and limit price are required for stop-limit orders")
     
     # Get market data
     market_data = None
@@ -799,8 +813,15 @@ async def validate_market_order(
     if market_data and not errors:
         if order_type == 'MARKET':
             estimated_price = market_data['ask'] if action == 'BUY' else market_data['bid']
-        else:
+        elif order_type == 'LIMIT':
             estimated_price = float(limit_price)
+        elif order_type == 'STOP':
+            estimated_price = float(stop_price)
+        elif order_type == 'STOP_LIMIT':
+            # For stop-limit, use limit price for cost estimation
+            estimated_price = float(limit_price)
+        else:
+            estimated_price = market_data['last']
         
         estimated_cost = quantity * estimated_price
         
@@ -841,53 +862,106 @@ async def analyze_message(
         # Analyze the message
         analysis_result = message_analyzer.analyze_message(request.message)
         
-        # If signals were found, save them to the database
-        if analysis_result.get("is_signal") and analysis_result.get("signals"):
-            conn = get_db_connection()
-            try:
-                cursor = conn.cursor()
-                
-                # Extract signals for database
-                db_signals = message_analyzer.extract_signals_for_db(analysis_result)
-                
-                for signal_data in db_signals:
-                    cursor.execute("""
-                        INSERT INTO signals (
-                            user_id, symbol, action, price, 
-                            stop_loss, take_profit, source, 
-                            original_message, remarks, analysis_notes, status
-                        )
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'pending')
-                        RETURNING id
-                    """, (
-                        current_user.id,
-                        signal_data['symbol'],
-                        signal_data['action'],
-                        signal_data.get('price'),
-                        signal_data.get('stop_loss'),
-                        signal_data.get('take_profit'),
-                        'message_paste',
-                        signal_data.get('original_message', ''),
-                        signal_data.get('remarks', ''),
-                        signal_data.get('analysis_notes', '')
-                    ))
-                    
-                    signal_id = cursor.fetchone()[0]
-                    print(f"Created signal {signal_id} from AI analysis")
-                
-                conn.commit()
-            except Exception as e:
-                conn.rollback()
-                print(f"Error saving analyzed signals: {e}")
-                # Don't fail the request, just log the error
-            finally:
-                conn.close()
-        
+        # Return analysis result WITHOUT creating signals automatically
+        # User will select which signals to create via separate endpoint
         return MessageAnalysisResponse(**analysis_result)
         
     except Exception as e:
         print(f"Error analyzing message: {e}")
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+
+@app.post("/api/signals/create-from-analysis")
+async def create_signals_from_analysis(
+    request: Dict[str, Any],
+    current_user: User = Depends(get_current_user)
+):
+    """Create signals from user-selected analysis results"""
+    try:
+        signals_data = request.get('signals', [])
+        if not signals_data:
+            raise HTTPException(status_code=400, detail="No signals provided")
+        
+        conn = get_db_connection()
+        created_signals = []
+        
+        try:
+            cursor = conn.cursor()
+            
+            for signal_data in signals_data:
+                # Extract signal fields
+                symbol = signal_data.get('symbol', '').upper()
+                action = signal_data.get('action', 'BUY').upper()
+                price = signal_data.get('entry_price') or signal_data.get('price')
+                stop_loss = signal_data.get('stop_loss')
+                take_profit = signal_data.get('take_profit')
+                quantity = signal_data.get('quantity')
+                original_message = signal_data.get('original_message', '')
+                analysis_notes = signal_data.get('analysis_notes', '')
+                
+                # Extract enhanced data for info button
+                enhanced_data = signal_data.get('enhanced_data', {})
+                if not enhanced_data:
+                    # Build enhanced data from signal analysis
+                    enhanced_data = {
+                        'entry_concept': signal_data.get('entry_concept'),
+                        'order_type': signal_data.get('order_type'),
+                        'take_profit_levels': signal_data.get('take_profit_levels', []),
+                        'time_frame': signal_data.get('time_frame'),
+                        'conditions': signal_data.get('conditions'),
+                        'confidence': signal_data.get('confidence'),
+                        'remarks': signal_data.get('remarks')
+                    }
+                
+                # Validate required fields
+                if not symbol or action not in ['BUY', 'SELL']:
+                    continue  # Skip invalid signals
+                
+                cursor.execute("""
+                    INSERT INTO signals (
+                        user_id, symbol, action, price, 
+                        stop_loss, take_profit, quantity, source, 
+                        original_message, remarks, analysis_notes, status, enhanced_data
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'pending', %s)
+                    RETURNING id, symbol, action, price, stop_loss, take_profit, quantity, status, created_at
+                """, (
+                    current_user.id,
+                    symbol,
+                    action,
+                    price,
+                    stop_loss,
+                    take_profit,
+                    quantity,
+                    'message_paste',  # Changed to message_paste to show info button
+                    original_message,
+                    '',  # remarks
+                    analysis_notes,
+                    json.dumps(enhanced_data)  # Store as JSON
+                ))
+                
+                result = cursor.fetchone()
+                if result:
+                    signal_dict = dict(zip([desc[0] for desc in cursor.description], result))
+                    created_signals.append(signal_dict)
+                    print(f"Created signal {result[0]} for {symbol} {action}")
+            
+            conn.commit()
+            
+            return {
+                "success": True,
+                "created_count": len(created_signals),
+                "signals": created_signals
+            }
+            
+        except Exception as e:
+            conn.rollback()
+            raise e
+        finally:
+            conn.close()
+        
+    except Exception as e:
+        print(f"Error creating signals from analysis: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to create signals: {str(e)}")
 
 # Trade endpoints
 @app.get("/api/trades", response_model=List[Trade])
@@ -1007,18 +1081,28 @@ async def execute_trade(
             quantity = order_params.get('quantity', signal_dict.get('quantity') or 100)
             order_type = order_params.get('order_type', 'MARKET')
             limit_price = order_params.get('limit_price')
+            stop_price = order_params.get('stop_price')
             time_in_force = order_params.get('time_in_force', 'DAY')
         else:
             quantity = signal_dict.get('quantity') or 100
             order_type = 'LMT' if signal_dict.get('price') else 'MKT'
             limit_price = float(signal_dict['price']) if signal_dict.get('price') else None
+            stop_price = float(signal_dict['stop_price']) if signal_dict.get('stop_price') else None
             time_in_force = 'DAY'
         
         # Ensure quantity is a float for fractional shares
         quantity = float(quantity)
         
         # Convert order type to Alpaca format
-        alpaca_order_type = 'limit' if order_type in ['LIMIT', 'LMT'] else 'market'
+        alpaca_order_type = order_type.lower()
+        if order_type in ['LIMIT', 'LMT']:
+            alpaca_order_type = 'limit'
+        elif order_type in ['MARKET', 'MKT']:
+            alpaca_order_type = 'market'
+        elif order_type == 'STOP':
+            alpaca_order_type = 'stop'
+        elif order_type == 'STOP_LIMIT':
+            alpaca_order_type = 'stop_limit'
         
         # Validate with broker (check account balance, etc.)
         account_summary = await broker_client.get_account_summary()
@@ -1029,9 +1113,16 @@ async def execute_trade(
             # Get current market price for validation
             market_data = await broker_client.get_market_data(signal_dict['symbol'])
             estimated_price = market_data.get('last', 0)
-        else:
+        elif alpaca_order_type == 'limit':
             estimated_price = float(limit_price) if limit_price else 0
-            
+        elif alpaca_order_type == 'stop':
+            estimated_price = float(stop_price) if stop_price else 0
+        elif alpaca_order_type == 'stop_limit':
+            # For stop-limit, use limit price for cost estimation
+            estimated_price = float(limit_price) if limit_price else 0
+        else:
+            estimated_price = 0
+        
         required_capital = quantity * estimated_price
         
         if required_capital > buying_power:
@@ -1047,6 +1138,7 @@ async def execute_trade(
             quantity=quantity,
             order_type=alpaca_order_type,
             limit_price=float(limit_price) if limit_price else None,
+            stop_price=float(stop_price) if stop_price else None,
             time_in_force=time_in_force.lower()
         )
         
@@ -1059,12 +1151,13 @@ async def execute_trade(
                 user_id, account_id, signal_id, symbol, action, quantity, 
                 entry_price, status, broker_order_id, created_at
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, 'pending', %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, 'pending', %s, %s, %s, %s)
             RETURNING id
         """, (
             current_user.id, account.id, signal_id, signal_dict['symbol'], 
             signal_dict['action'], quantity,
-            limit_price or estimated_price or 0, str(order_id), datetime.utcnow()  # Ensure order_id is string
+            limit_price or estimated_price or 0, str(order_id), datetime.utcnow(),  # Ensure order_id is string
+            stop_price or estimated_price or 0, time_in_force.lower()
         ))
         
         trade_id = cursor.fetchone()[0]
@@ -1126,6 +1219,7 @@ async def close_position(
     quantity_to_close = float(close_params.get('quantity', 0))
     order_type = close_params.get('order_type', 'MARKET')
     limit_price = close_params.get('limit_price')
+    stop_price = close_params.get('stop_price')
     
     if not symbol or quantity_to_close <= 0:
         raise HTTPException(status_code=400, detail="Invalid symbol or quantity")
@@ -1161,13 +1255,23 @@ async def close_position(
             )
         
         # Place the sell order
-        alpaca_order_type = 'limit' if order_type == 'LIMIT' else 'market'
+        alpaca_order_type = order_type.lower()
+        if order_type == 'LIMIT':
+            alpaca_order_type = 'limit'
+        elif order_type == 'MARKET':
+            alpaca_order_type = 'market'
+        elif order_type == 'STOP':
+            alpaca_order_type = 'stop'
+        elif order_type == 'STOP_LIMIT':
+            alpaca_order_type = 'stop_limit'
+        
         order_id = await broker_client.place_order(
             symbol=symbol,
             action='SELL',
             quantity=quantity_to_close,
             order_type=alpaca_order_type,
-            limit_price=float(limit_price) if limit_price else None
+            limit_price=float(limit_price) if limit_price else None,
+            stop_price=float(stop_price) if stop_price else None
         )
         
         if not order_id:
@@ -1411,6 +1515,14 @@ async def get_analytics(current_user: User = Depends(get_current_user)):
     try:
         cursor = conn.cursor()
         
+        # Get account-level metrics
+        cursor.execute("""
+            SELECT realized_pnl, realized_pnl_updated_at, win_rate
+            FROM accounts
+            WHERE id = %s
+        """, (account.id,))
+        account_metrics = cursor.fetchone()
+        
         # Trading statistics for the active account
         # Include all trades (open, closed, pending) for total count
         cursor.execute("""
@@ -1486,12 +1598,20 @@ async def get_analytics(current_user: User = Depends(get_current_user)):
         analytics['avg_pnl'] = float(analytics['avg_pnl'])
         analytics['total_floating_pnl'] = float(analytics['total_floating_pnl'])
         
-        # Calculate win rate based on closed trades only
-        closed_trades = analytics['winning_trades'] + analytics['losing_trades']
-        if closed_trades > 0:
-            analytics['win_rate'] = (analytics['winning_trades'] / closed_trades) * 100
+        # Use account-level win rate and realized P&L if available
+        if account_metrics:
+            analytics['realized_pnl'] = float(account_metrics[0]) if account_metrics[0] else 0
+            analytics['realized_pnl_updated_at'] = account_metrics[1].isoformat() if account_metrics[1] else None
+            analytics['win_rate'] = float(account_metrics[2]) if account_metrics[2] else 0
         else:
-            analytics['win_rate'] = 0
+            # Fallback to calculated win rate if account metrics not available
+            closed_trades = analytics['winning_trades'] + analytics['losing_trades']
+            if closed_trades > 0:
+                analytics['win_rate'] = (analytics['winning_trades'] / closed_trades) * 100
+            else:
+                analytics['win_rate'] = 0
+            analytics['realized_pnl'] = analytics['total_pnl']
+            analytics['realized_pnl_updated_at'] = None
         
         # Add account info
         analytics['active_account'] = account.name
@@ -2003,6 +2123,144 @@ async def get_available_instances(current_user: User = Depends(get_current_user)
     finally:
         conn.close()
 
+@app.post("/api/trades/calculate-pnl-from-alpaca")
+async def calculate_pnl_from_alpaca(current_user: User = Depends(get_current_user)):
+    """Calculate P&L directly from Alpaca order history using FIFO matching and save to account."""
+    # Get active account
+    account = await get_active_account(current_user)
+    if not account:
+        raise HTTPException(status_code=400, detail="No active trading account")
+    
+    # Get broker client
+    broker_client = get_broker_client(account)
+    if not broker_client:
+        raise HTTPException(status_code=400, detail="Failed to initialize broker client")
+    
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        
+        # Get all filled orders from Alpaca
+        all_orders = await broker_client.get_orders(status='all', limit=500)
+        
+        # Filter only filled orders and organize by symbol
+        orders_by_symbol = {}
+        for order in all_orders:
+            if order['status'] == 'filled':
+                symbol = order['symbol']
+                if symbol not in orders_by_symbol:
+                    orders_by_symbol[symbol] = {'buys': [], 'sells': []}
+                
+                order_data = {
+                    'id': order['id'],
+                    'qty': float(order['filled_qty']),
+                    'price': float(order['filled_avg_price']),
+                    'time': order['filled_at'],
+                    'side': order['side'].upper()
+                }
+                
+                if order['side'].upper() == 'BUY':
+                    orders_by_symbol[symbol]['buys'].append(order_data)
+                else:
+                    orders_by_symbol[symbol]['sells'].append(order_data)
+        
+        # Calculate P&L for each symbol using FIFO
+        total_realized_pnl = 0
+        symbol_pnls = {}
+        winning_trades = 0
+        losing_trades = 0
+        total_closed_trades = 0
+        
+        for symbol, orders in orders_by_symbol.items():
+            # Sort by time (oldest first for FIFO)
+            buys = sorted(orders['buys'], key=lambda x: x['time'])
+            sells = sorted(orders['sells'], key=lambda x: x['time'])
+            
+            # FIFO matching
+            buy_queue = []
+            realized_pnl = 0
+            
+            for buy in buys:
+                buy_queue.append({
+                    'qty': buy['qty'],
+                    'price': buy['price'],
+                    'remaining': buy['qty']
+                })
+            
+            for sell in sells:
+                sell_qty = sell['qty']
+                sell_price = sell['price']
+                sell_id = sell['id']
+                sell_pnl = 0
+                matched = False
+                
+                # Match against buy queue (FIFO)
+                while sell_qty > 0 and buy_queue:
+                    buy_order = buy_queue[0]
+                    match_qty = min(buy_order['remaining'], sell_qty)
+                    pnl = (sell_price - buy_order['price']) * match_qty
+                    sell_pnl += pnl
+                    realized_pnl += pnl
+                    buy_order['remaining'] -= match_qty
+                    sell_qty -= match_qty
+                    matched = True
+                    # Track win/loss per match
+                    total_closed_trades += 1
+                    if pnl > 0:
+                        winning_trades += 1
+                    elif pnl < 0:
+                        losing_trades += 1
+                    if buy_order['remaining'] == 0:
+                        buy_queue.pop(0)
+                
+                # Update database with calculated P&L for this SELL trade
+                if matched:
+                    cursor.execute("""
+                        UPDATE trades 
+                        SET pnl = %s
+                        WHERE broker_order_id = %s AND action = 'SELL'
+                    """, (
+                        sell_pnl,
+                        sell_id
+                    ))
+            
+            symbol_pnls[symbol] = realized_pnl
+            total_realized_pnl += realized_pnl
+        
+        conn.commit()
+        
+        # Calculate win rate
+        win_rate = 0
+        if total_closed_trades > 0:
+            win_rate = (winning_trades / total_closed_trades) * 100
+        
+        # Save realized P&L and win rate to the account
+        cursor.execute("""
+            UPDATE accounts
+            SET realized_pnl = %s,
+                realized_pnl_updated_at = NOW(),
+                win_rate = %s
+            WHERE id = %s
+        """, (total_realized_pnl, win_rate, account.id))
+        conn.commit()
+        
+        return {
+            "message": "P&L calculated from Alpaca data and saved to account",
+            "total_realized_pnl": total_realized_pnl,
+            "symbol_pnls": symbol_pnls,
+            "winning_trades": winning_trades,
+            "losing_trades": losing_trades,
+            "total_closed_trades": total_closed_trades,
+            "win_rate": win_rate
+        }
+        
+    except Exception as e:
+        conn.rollback()
+        print(f"Error calculating P&L from Alpaca: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
+
 # Health check for deployment
 @app.get("/health")
 async def health_check():
@@ -2157,6 +2415,11 @@ async def sync_trades_with_broker(current_user: User = Depends(get_current_user)
                 else:
                     current_price = float(order.get('filled_avg_price') or order.get('limit_price') or 0)
                 # Update all relevant fields
+                exit_price = None
+                if our_status == 'closed':
+                    exit_price = float(order.get('filled_avg_price') or order.get('limit_price') or 0)
+                    current_price = None  # Don't set current_price for closed trades
+                
                 cursor.execute("""
                     UPDATE trades 
                     SET status = %s,
@@ -2164,6 +2427,7 @@ async def sync_trades_with_broker(current_user: User = Depends(get_current_user)
                         action = %s,
                         quantity = %s,
                         entry_price = %s,
+                        exit_price = %s,
                         broker_fill_price = %s,
                         opened_at = %s,
                         current_price = %s,
@@ -2178,6 +2442,7 @@ async def sync_trades_with_broker(current_user: User = Depends(get_current_user)
                     order['side'].upper(),
                     float(order.get('filled_qty') or order.get('qty', 0)),
                     float(order.get('filled_avg_price') or order.get('limit_price') or 0),
+                    exit_price,
                     float(order.get('filled_avg_price') or 0),
                     order.get('filled_at') or order.get('updated_at'),
                     current_price,
@@ -2656,6 +2921,358 @@ async def recalculate_pnl(current_user: User = Depends(get_current_user)):
     except Exception as e:
         conn.rollback()
         print(f"Error recalculating P&L: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
+
+@app.post("/api/sync-dashboard")
+async def sync_dashboard(current_user: User = Depends(get_current_user)):
+    """Consolidated sync endpoint that syncs trades and calculates P&L/win rate"""
+    # Get active account
+    account = await get_active_account(current_user)
+    if not account:
+        raise HTTPException(status_code=400, detail="No active trading account")
+    
+    # Get broker client
+    broker_client = get_broker_client(account)
+    if not broker_client:
+        raise HTTPException(status_code=400, detail="Failed to initialize broker client")
+    
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        
+        # Step 1: Sync trades with broker
+        all_orders = await broker_client.get_orders(status='all', limit=500)
+        print(f"Fetched {len(all_orders)} orders from Alpaca")
+        
+        imported_count = 0
+        updated_count = 0
+        
+        # Fetch all open positions from Alpaca
+        positions = await broker_client.get_positions()
+        position_map = {pos['symbol']: pos for pos in positions}
+        
+        for order in all_orders:
+            broker_order_id = str(order['id'])
+            # Check if we have this order
+            cursor.execute("""
+                SELECT id, entry_price, quantity, action, status, symbol FROM trades 
+                WHERE broker_order_id = %s
+            """, (broker_order_id,))
+            existing_trade = cursor.fetchone()
+            
+            # Map Alpaca status to our status
+            alpaca_status = order['status']
+            our_status = 'pending'
+            if alpaca_status == 'filled':
+                if order['side'].upper() == 'SELL':
+                    our_status = 'closed'
+                else:
+                    our_status = 'open'
+            elif alpaca_status in ['canceled', 'cancelled', 'expired', 'rejected']:
+                our_status = 'cancelled'
+            elif alpaca_status == 'partially_filled':
+                our_status = 'open'
+            
+            closed_at = order.get('canceled_at') or order.get('updated_at') if our_status == 'cancelled' else None
+            close_reason = None
+            if our_status == 'cancelled':
+                if alpaca_status in ['canceled', 'cancelled']:
+                    close_reason = 'Order cancelled'
+                elif alpaca_status == 'expired':
+                    close_reason = 'Order expired'
+                elif alpaca_status == 'rejected':
+                    close_reason = 'Order rejected by broker'
+            
+            pnl = None
+            floating_pnl = None
+            
+            if existing_trade:
+                trade_id, entry_price, quantity, action, db_status, symbol = existing_trade
+                current_price = None
+                
+                # Special handling for SELL orders that are filled
+                if action == 'SELL' and our_status == 'open' and alpaca_status == 'filled':
+                    # Check if this is a position close
+                    cursor.execute("""
+                        SELECT data FROM trade_notifications 
+                        WHERE trade_id = %s
+                    """, (trade_id,))
+                    notifications = cursor.fetchall()
+                    
+                    for notification in notifications:
+                        if notification[0]:
+                            notif_data = notification[0] if isinstance(notification[0], dict) else json.loads(notification[0])
+                            
+                            if notif_data.get('notification_type') == 'position_close_pending':
+                                positions_to_close = notif_data.get('positions_to_close', [])
+                                sell_price = float(order.get('filled_avg_price', 0))
+                                
+                                total_pnl = 0
+                                for pos in positions_to_close:
+                                    pos_entry_price = pos['entry_price']
+                                    pos_close_quantity = pos['close_quantity']
+                                    pos_pnl = (sell_price - pos_entry_price) * pos_close_quantity
+                                    total_pnl += pos_pnl
+                                    
+                                    if pos['remaining_quantity'] > 0:
+                                        cursor.execute("""
+                                            UPDATE trades 
+                                            SET quantity = %s
+                                            WHERE id = %s
+                                        """, (pos['remaining_quantity'], pos['id']))
+                                    else:
+                                        cursor.execute("""
+                                            UPDATE trades 
+                                            SET status = 'closed',
+                                                exit_price = %s,
+                                                pnl = %s,
+                                                closed_at = %s,
+                                                close_reason = 'Position closed'
+                                            WHERE id = %s
+                                        """, (sell_price, pos_pnl, order.get('filled_at'), pos['id']))
+                                
+                                pnl = total_pnl
+                                our_status = 'closed'
+                                
+                                notif_data['notification_type'] = 'position_close_completed'
+                                cursor.execute("""
+                                    UPDATE trade_notifications 
+                                    SET data = %s
+                                    WHERE trade_id = %s AND id = (
+                                        SELECT id FROM trade_notifications 
+                                        WHERE trade_id = %s 
+                                        ORDER BY created_at DESC 
+                                        LIMIT 1
+                                    )
+                                """, (json.dumps(notif_data), trade_id, trade_id))
+                                
+                                break
+                
+                # Always try to get the latest price for open trades
+                if our_status == 'open' and action == 'BUY':
+                    if symbol in position_map:
+                        current_price = float(position_map[symbol].get('current_price', 0))
+                    else:
+                        market_data = await broker_client.get_market_data(symbol)
+                        current_price = float(market_data.get('last', 0))
+                    
+                    if entry_price is not None and quantity is not None:
+                        try:
+                            floating_pnl = (current_price - float(entry_price)) * float(quantity) if action == 'BUY' else (float(entry_price) - current_price) * float(quantity)
+                        except Exception:
+                            floating_pnl = 0
+                else:
+                    current_price = float(order.get('filled_avg_price') or order.get('limit_price') or 0)
+                
+                # Update existing trade
+                exit_price = None
+                if our_status == 'closed':
+                    exit_price = float(order.get('filled_avg_price') or order.get('limit_price') or 0)
+                    current_price = None  # Don't set current_price for closed trades
+                
+                cursor.execute("""
+                    UPDATE trades 
+                    SET status = %s,
+                        symbol = %s,
+                        action = %s,
+                        quantity = %s,
+                        entry_price = %s,
+                        exit_price = %s,
+                        broker_fill_price = %s,
+                        opened_at = %s,
+                        current_price = %s,
+                        pnl = %s,
+                        floating_pnl = %s,
+                        closed_at = %s,
+                        close_reason = %s
+                    WHERE broker_order_id = %s
+                """, (
+                    our_status,
+                    order['symbol'],
+                    order['side'].upper(),
+                    float(order.get('filled_qty') or order.get('qty', 0)),
+                    float(order.get('filled_avg_price') or order.get('limit_price') or 0),
+                    exit_price,
+                    float(order.get('filled_avg_price') or 0),
+                    order.get('filled_at') or order.get('updated_at'),
+                    current_price,
+                    pnl,
+                    floating_pnl,
+                    closed_at if our_status != 'closed' else order.get('filled_at'),
+                    close_reason if our_status != 'closed' else 'Position closed',
+                    broker_order_id
+                ))
+                updated_count += 1
+            else:
+                # Insert new trade
+                exit_price = None
+                current_price = float(order.get('filled_avg_price') or order.get('limit_price') or 0)
+                if our_status == 'closed':
+                    exit_price = current_price
+                    current_price = None  # Don't set current_price for closed trades
+                
+                cursor.execute("""
+                    INSERT INTO trades (
+                        user_id, account_id, symbol, action, quantity,
+                        entry_price, exit_price, broker_fill_price, status,
+                        broker_order_id, created_at, opened_at,
+                        current_price, pnl, floating_pnl, closed_at, close_reason
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """, (
+                    current_user.id,
+                    account.id,
+                    order['symbol'],
+                    order['side'].upper(),
+                    float(order.get('filled_qty') or order.get('qty', 0)),
+                    float(order.get('filled_avg_price') or order.get('limit_price') or 0),
+                    exit_price,
+                    float(order.get('filled_avg_price') or 0),
+                    our_status,
+                    broker_order_id,
+                    order.get('created_at'),
+                    order.get('filled_at') if our_status == 'open' else None,
+                    current_price,
+                    pnl,
+                    floating_pnl,
+                    closed_at,
+                    close_reason
+                ))
+                imported_count += 1
+        
+        conn.commit()
+        
+        # Step 2: Calculate P&L and win rate from Alpaca data
+        # Filter only filled orders and organize by symbol
+        orders_by_symbol = {}
+        for order in all_orders:
+            if order['status'] == 'filled':
+                symbol = order['symbol']
+                if symbol not in orders_by_symbol:
+                    orders_by_symbol[symbol] = {'buys': [], 'sells': []}
+                
+                order_data = {
+                    'id': order['id'],
+                    'qty': float(order['filled_qty']),
+                    'price': float(order['filled_avg_price']),
+                    'time': order['filled_at'],
+                    'side': order['side'].upper()
+                }
+                
+                if order['side'].upper() == 'BUY':
+                    orders_by_symbol[symbol]['buys'].append(order_data)
+                else:
+                    orders_by_symbol[symbol]['sells'].append(order_data)
+        
+        # Calculate P&L for each symbol using FIFO
+        total_realized_pnl = 0
+        symbol_pnls = {}
+        winning_trades = 0
+        losing_trades = 0
+        total_closed_trades = 0
+        
+        for symbol, orders in orders_by_symbol.items():
+            # Sort by time (oldest first for FIFO)
+            buys = sorted(orders['buys'], key=lambda x: x['time'])
+            sells = sorted(orders['sells'], key=lambda x: x['time'])
+            
+            # FIFO matching
+            buy_queue = []
+            realized_pnl = 0
+            
+            for buy in buys:
+                buy_queue.append({
+                    'qty': buy['qty'],
+                    'price': buy['price'],
+                    'remaining': buy['qty']
+                })
+            
+            for sell in sells:
+                sell_qty = sell['qty']
+                sell_price = sell['price']
+                sell_id = sell['id']
+                sell_pnl = 0
+                matched = False
+                
+                # Match against buy queue (FIFO)
+                while sell_qty > 0 and buy_queue:
+                    buy_order = buy_queue[0]
+                    match_qty = min(buy_order['remaining'], sell_qty)
+                    pnl = (sell_price - buy_order['price']) * match_qty
+                    sell_pnl += pnl
+                    realized_pnl += pnl
+                    buy_order['remaining'] -= match_qty
+                    sell_qty -= match_qty
+                    matched = True
+                    # Track win/loss per match
+                    total_closed_trades += 1
+                    if pnl > 0:
+                        winning_trades += 1
+                    elif pnl < 0:
+                        losing_trades += 1
+                    if buy_order['remaining'] == 0:
+                        buy_queue.pop(0)
+                
+                # Update database with calculated P&L for this SELL trade
+                if matched:
+                    cursor.execute("""
+                        UPDATE trades 
+                        SET pnl = %s
+                        WHERE broker_order_id = %s AND action = 'SELL'
+                    """, (
+                        sell_pnl,
+                        sell_id
+                    ))
+            
+            symbol_pnls[symbol] = realized_pnl
+            total_realized_pnl += realized_pnl
+        
+        # Calculate win rate
+        win_rate = 0
+        if total_closed_trades > 0:
+            win_rate = (winning_trades / total_closed_trades) * 100
+        
+        # Save realized P&L and win rate to the account
+        cursor.execute("""
+            UPDATE accounts
+            SET realized_pnl = %s,
+                realized_pnl_updated_at = NOW(),
+                win_rate = %s
+            WHERE id = %s
+        """, (total_realized_pnl, win_rate, account.id))
+        conn.commit()
+        
+        # Get updated account data
+        cursor.execute("""
+            SELECT realized_pnl, realized_pnl_updated_at, win_rate
+            FROM accounts
+            WHERE id = %s
+        """, (account.id,))
+        account_data = cursor.fetchone()
+        
+        return {
+            "message": "Dashboard synced successfully",
+            "sync_results": {
+                "total_orders": len(all_orders),
+                "imported": imported_count,
+                "updated": updated_count
+            },
+            "pnl_results": {
+                "total_realized_pnl": float(account_data[0]) if account_data[0] else 0,
+                "win_rate": float(account_data[2]) if account_data[2] else 0,
+                "winning_trades": winning_trades,
+                "losing_trades": losing_trades,
+                "total_closed_trades": total_closed_trades,
+                "last_updated": account_data[1].isoformat() if account_data[1] else None
+            },
+            "symbol_pnls": symbol_pnls
+        }
+        
+    except Exception as e:
+        conn.rollback()
+        print(f"Error syncing dashboard: {e}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         conn.close()

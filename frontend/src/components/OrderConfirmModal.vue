@@ -1,6 +1,6 @@
 <template>
   <div v-if="isOpen" class="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center p-4 z-50">
-    <div class="bg-white rounded-lg max-w-4xl w-full max-h-[90vh] overflow-hidden">
+    <div class="bg-white rounded-lg max-w-7xl w-full max-h-[90vh] overflow-hidden">
       <!-- Header -->
       <div class="px-6 py-4 border-b bg-gray-50">
         <div class="flex items-center justify-between">
@@ -20,8 +20,8 @@
       
       <!-- Content -->
       <div class="p-6 overflow-y-auto max-h-[calc(90vh-180px)]">
-        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <!-- Order Form -->
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          <!-- Left Column - Order Form -->
           <div class="space-y-6">
             <h4 class="text-lg font-medium text-gray-900">Order Details</h4>
             
@@ -165,11 +165,45 @@
               >
                 <option value="MARKET">Market</option>
                 <option value="LIMIT">Limit</option>
+                <option value="STOP">Stop</option>
+                <option value="STOP_LIMIT">Stop-Limit</option>
               </select>
+              
+              <!-- Order type explanations -->
+              <div class="mt-2 text-xs text-gray-500">
+                <p v-if="orderForm.order_type === 'MARKET'">
+                  <strong>Market:</strong> Execute immediately at current market price
+                </p>
+                <p v-if="orderForm.order_type === 'LIMIT'">
+                  <strong>Limit:</strong> Only execute at specified price or better
+                </p>
+                <p v-if="orderForm.order_type === 'STOP'">
+                  <strong>Stop:</strong> Becomes market order when stop price is reached
+                </p>
+                <p v-if="orderForm.order_type === 'STOP_LIMIT'">
+                  <strong>Stop-Limit:</strong> Becomes limit order when stop price is reached
+                </p>
+              </div>
             </div>
             
-            <!-- Limit Price (if limit order) -->
-            <div v-if="orderForm.order_type === 'LIMIT'">
+            <!-- Stop Price (if stop or stop-limit order) -->
+            <div v-if="orderForm.order_type === 'STOP' || orderForm.order_type === 'STOP_LIMIT'">
+              <label class="block text-sm font-medium text-gray-700">Stop Price</label>
+              <div class="mt-1 flex items-center space-x-2">
+                <span class="text-gray-500">$</span>
+                <input
+                  v-model="orderForm.stop_price"
+                  type="number"
+                  step="0.01"
+                  min="0.01"
+                  class="flex-1 px-3 py-2 border border-gray-300 rounded-md focus:ring-primary-500 focus:border-primary-500"
+                  @change="validateOrder"
+                />
+              </div>
+            </div>
+            
+            <!-- Limit Price (if limit or stop-limit order) -->
+            <div v-if="orderForm.order_type === 'LIMIT' || orderForm.order_type === 'STOP_LIMIT'">
               <label class="block text-sm font-medium text-gray-700">Limit Price</label>
               <div class="mt-1 flex items-center space-x-2">
                 <span class="text-gray-500">$</span>
@@ -199,7 +233,80 @@
             </div>
           </div>
           
-          <!-- Order Preview & Account Info -->
+          <!-- Middle Column - Trading Levels -->
+          <div class="h-full flex flex-col space-y-3">
+            <!-- Take Profit Levels Zone (Top) -->
+            <div class="flex-1 bg-green-50 border-2 border-dashed border-green-200 rounded-lg p-6 flex items-center justify-center min-h-[200px]">
+              <div class="text-center">
+                <div class="mb-3">
+                  <svg class="h-8 w-8 mx-auto text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
+                  </svg>
+                </div>
+                <h5 class="text-sm font-medium text-green-800 mb-2">Take Profit Levels</h5>
+                <p class="text-xs text-green-600">Add multiple profit targets</p>
+                <p class="text-xs text-green-500 mt-1">(Coming Soon)</p>
+              </div>
+            </div>
+            
+            <!-- Entry Price Bar (Middle) -->
+            <div class="bg-blue-100 border border-blue-300 rounded-lg p-3 shadow-sm">
+              <div class="flex items-center justify-between">
+                <span class="text-sm font-medium text-blue-800 flex items-center">
+                  <svg class="h-4 w-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                  Entry
+                </span>
+                <div class="text-sm text-blue-700 font-medium">
+                  <span v-if="orderForm.order_type === 'MARKET'">
+                    Market Order
+                    <span v-if="marketData?.last" class="ml-1 text-blue-600">@ ${{ marketData.last.toFixed(2) }}</span>
+                  </span>
+                  <span v-else-if="orderForm.order_type === 'LIMIT' && orderForm.limit_price">
+                    Limit @ ${{ Number(orderForm.limit_price).toFixed(2) }}
+                  </span>
+                  <span v-else-if="orderForm.order_type === 'STOP' && orderForm.stop_price">
+                    Stop @ ${{ Number(orderForm.stop_price).toFixed(2) }}
+                  </span>
+                  <span v-else-if="orderForm.order_type === 'STOP_LIMIT' && orderForm.limit_price">
+                    Stop-Limit @ ${{ Number(orderForm.limit_price).toFixed(2) }}
+                  </span>
+                  <span v-else class="text-blue-500">No Price Set</span>
+                </div>
+              </div>
+            </div>
+            
+            <!-- Stop Loss Zone (Bottom) -->
+            <div class="bg-red-50 border border-red-200 rounded-lg p-4 shadow-sm">
+              <div class="flex items-center mb-3">
+                <svg class="h-4 w-4 mr-2 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
+                </svg>
+                <h5 class="text-sm font-medium text-red-800">Stop Loss</h5>
+              </div>
+              
+              <div class="space-y-3">
+                <div>
+                  <label class="block text-xs font-medium text-red-700 mb-1">Stop Price</label>
+                  <div class="flex items-center space-x-2">
+                    <span class="text-red-500 text-sm">$</span>
+                    <input
+                      v-model="orderForm.stop_loss_price"
+                      type="number"
+                      step="0.01"
+                      min="0.01"
+                      placeholder="0.00"
+                      class="flex-1 px-2 py-1 text-sm border border-red-300 rounded focus:ring-red-500 focus:border-red-500 bg-white"
+                    />
+                  </div>
+                  <p class="text-xs text-red-600 mt-1">Automatically sell if price drops to this level</p>
+                </div>
+              </div>
+            </div>
+          </div>
+          
+          <!-- Right Column - Order Preview & Account Info -->
           <div class="space-y-6">
             <!-- Signal Info -->
             <div v-if="signal && signal.id !== 0" class="bg-gray-50 p-4 rounded-lg">
@@ -314,6 +421,7 @@ interface Signal {
   take_profit?: number
   quantity?: number
   source?: string
+  enhanced_data?: string
 }
 
 interface Props {
@@ -334,7 +442,9 @@ const orderForm = ref({
   amountType: 'dollars' as 'dollars' | 'shares',
   order_type: 'MARKET',
   limit_price: null as number | null,
-  time_in_force: 'DAY'
+  stop_price: null as number | null,
+  time_in_force: 'DAY',
+  stop_loss_price: 0.00
 })
 
 const validating = ref(false)
@@ -364,9 +474,20 @@ const canExecute = computed(() => {
 const localOrderPreview = computed(() => {
   if (!marketData.value?.last) return null
   
-  const price = orderForm.value.order_type === 'LIMIT' && orderForm.value.limit_price 
-    ? Number(orderForm.value.limit_price)
-    : marketData.value.last
+  let price: number
+  
+  // Determine the price to use based on order type
+  if (orderForm.value.order_type === 'LIMIT' && orderForm.value.limit_price) {
+    price = Number(orderForm.value.limit_price)
+  } else if (orderForm.value.order_type === 'STOP' && orderForm.value.stop_price) {
+    price = Number(orderForm.value.stop_price)
+  } else if (orderForm.value.order_type === 'STOP_LIMIT' && orderForm.value.limit_price) {
+    // For stop-limit, use limit price for cost calculation
+    price = Number(orderForm.value.limit_price)
+  } else {
+    // Market order or incomplete stop/limit order
+    price = marketData.value.last
+  }
     
   return {
     estimated_quantity: orderForm.value.quantity,
@@ -405,13 +526,49 @@ watch(() => props.signal, (newSignal) => {
       // Calculate dollar amount will happen after validation
     }
     
-    // If signal has a price, default to limit order
-    if (newSignal.price) {
-      orderForm.value.order_type = 'LIMIT'
-      orderForm.value.limit_price = newSignal.price
+    // If signal has enhanced analysis data, use that order type
+    let orderType = 'MARKET' // default
+    let limitPrice = null
+    let stopPrice = null
+    
+    // Check if we have enhanced analysis data with order type
+    if (newSignal.enhanced_data) {
+      try {
+        const enhancedData = typeof newSignal.enhanced_data === 'string' 
+          ? JSON.parse(newSignal.enhanced_data) 
+          : newSignal.enhanced_data
+        
+        if (enhancedData.order_type) {
+          orderType = enhancedData.order_type.toUpperCase()
+          console.log('Using order type from enhanced analysis:', orderType)
+        }
+      } catch (e) {
+        console.error('Error parsing enhanced_data:', e)
+      }
+    }
+    
+    // Fallback: If signal has a price but no enhanced data order type, default to limit order
+    if (!newSignal.enhanced_data && newSignal.price) {
+      orderType = 'LIMIT'
+      limitPrice = newSignal.price
+    } else if (orderType === 'LIMIT' && newSignal.price) {
+      limitPrice = newSignal.price
+    } else if ((orderType === 'STOP' || orderType === 'STOP_LIMIT') && newSignal.price) {
+      stopPrice = newSignal.price
+      if (orderType === 'STOP_LIMIT') {
+        limitPrice = newSignal.price
+      }
+    }
+    
+    orderForm.value.order_type = orderType
+    orderForm.value.limit_price = limitPrice
+    orderForm.value.stop_price = stopPrice
+    
+    // Initialize stop loss price from signal
+    if (newSignal.stop_loss) {
+      orderForm.value.stop_loss_price = newSignal.stop_loss
     } else {
-      orderForm.value.order_type = 'MARKET'
-      orderForm.value.limit_price = null
+      orderForm.value.stop_loss_price = 0.00
     }
     
     // Clear previous validation results
@@ -511,6 +668,7 @@ const validateOrder = async () => {
       quantity: quantityToValidate,
       order_type: orderForm.value.order_type,
       limit_price: orderForm.value.limit_price,
+      stop_price: orderForm.value.stop_price,
       time_in_force: orderForm.value.time_in_force
     }
     
@@ -581,6 +739,7 @@ const executeOrder = async () => {
           quantity: orderForm.value.quantity,
           order_type: orderForm.value.order_type,
           limit_price: orderForm.value.limit_price,
+          stop_price: orderForm.value.stop_price,
           time_in_force: orderForm.value.time_in_force
         })
         emit('executed', response.data)
@@ -603,6 +762,7 @@ const executeOrder = async () => {
           quantity: orderForm.value.quantity,
           order_type: orderForm.value.order_type,
           limit_price: orderForm.value.limit_price,
+          stop_price: orderForm.value.stop_price,
           time_in_force: orderForm.value.time_in_force
         })
         emit('executed', response.data)
@@ -615,6 +775,7 @@ const executeOrder = async () => {
         quantity: orderForm.value.quantity,
         order_type: orderForm.value.order_type,
         limit_price: orderForm.value.limit_price,
+        stop_price: orderForm.value.stop_price,
         time_in_force: orderForm.value.time_in_force
       })
       emit('executed', response.data)
@@ -639,7 +800,9 @@ const close = () => {
     amountType: 'dollars',
     order_type: 'MARKET',
     limit_price: null,
-    time_in_force: 'DAY'
+    stop_price: null,
+    time_in_force: 'DAY',
+    stop_loss_price: 0.00
   }
   emit('close')
 }

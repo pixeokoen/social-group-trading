@@ -3,7 +3,7 @@
     <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
       <div class="md:flex md:items-center md:justify-between mb-6">
         <h1 class="text-2xl font-semibold text-gray-900">Trading Signals</h1>
-        <div class="mt-4 md:mt-0 flex space-x-3">
+        <div class="mt-4 md:mt-0">
           <button
             @click="showMessageAnalyzer = true"
             class="inline-flex items-center px-4 py-2 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500"
@@ -13,15 +13,6 @@
             </svg>
             Analyze Message
           </button>
-          <button
-            @click="showCreateSignalModal"
-            class="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-primary-600 hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500"
-          >
-            <svg class="-ml-1 mr-2 h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
-            </svg>
-            Create Signal
-          </button>
         </div>
       </div>
       
@@ -29,7 +20,7 @@
       <div class="border-b border-gray-200 mb-6">
         <nav class="-mb-px flex space-x-8">
           <button
-            v-for="status in ['all', 'pending', 'approved', 'executed', 'rejected']"
+            v-for="status in ['all', 'pending', 'approved', 'executed']"
             :key="status"
             @click="filterStatus = status"
             :class="[
@@ -48,7 +39,6 @@
       <SignalList
         :signals="filteredSignals"
         @approve="approveSignal"
-        @reject="rejectSignal"
         @execute="executeSignal"
         @cancel="cancelSignal"
       />
@@ -82,17 +72,47 @@
                   <div v-if="analysisResult.is_signal" class="space-y-2">
                     <p class="text-sm text-green-600">✓ Trading signals detected</p>
                     
-                    <div v-for="(signal, index) in analysisResult.signals" :key="index" class="p-3 bg-white rounded border">
-                      <p class="text-sm"><span class="font-medium">Symbol:</span> {{ signal.symbol }}</p>
-                      <p class="text-sm"><span class="font-medium">Action:</span> {{ signal.action }}</p>
-                      <p v-if="signal.entry_price" class="text-sm"><span class="font-medium">Entry:</span> ${{ signal.entry_price }}</p>
-                      <p v-if="signal.stop_loss" class="text-sm"><span class="font-medium">Stop Loss:</span> ${{ signal.stop_loss }}</p>
-                      <p v-if="signal.take_profit" class="text-sm"><span class="font-medium">Take Profit:</span> ${{ signal.take_profit }}</p>
+                    <div class="space-y-3 max-h-64 overflow-y-auto">
+                      <div 
+                        v-for="(signal, index) in analysisResult.signals" 
+                        :key="index" 
+                        class="p-3 bg-white rounded border cursor-pointer hover:bg-blue-50 transition-colors"
+                        :class="{ 'ring-2 ring-blue-500 bg-blue-50': selectedSignalsForCreation.includes(index) }"
+                        @click="toggleSignalSelection(index)"
+                      >
+                        <div class="flex items-start justify-between">
+                          <div class="flex-1">
+                            <div class="flex items-center mb-2">
+                              <input 
+                                type="checkbox" 
+                                :checked="selectedSignalsForCreation.includes(index)"
+                                @click.stop
+                                @change="toggleSignalSelection(index)"
+                                class="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded mr-3"
+                              >
+                              <span class="text-sm font-semibold text-gray-900">{{ signal.symbol }} - {{ signal.action }}</span>
+                            </div>
+                            <div class="text-sm text-gray-600 space-y-1">
+                              <p v-if="signal.entry_price"><span class="font-medium">Entry:</span> ${{ signal.entry_price }}</p>
+                              <p v-if="signal.stop_loss"><span class="font-medium">Stop Loss:</span> ${{ signal.stop_loss }}</p>
+                              <p v-if="signal.take_profit"><span class="font-medium">Take Profit:</span> ${{ signal.take_profit }}</p>
+                              <p v-if="signal.quantity"><span class="font-medium">Quantity:</span> {{ signal.quantity }}</p>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
                     </div>
                     
-                    <div v-if="analysisResult.analysis_notes" class="mt-2">
-                      <p class="text-sm font-medium text-gray-700">Notes:</p>
+                    <div v-if="analysisResult.analysis_notes" class="mt-3 p-2 bg-blue-50 rounded">
+                      <p class="text-sm font-medium text-gray-700">Analysis Notes:</p>
                       <p class="text-sm text-gray-600">{{ analysisResult.analysis_notes }}</p>
+                    </div>
+                    
+                    <!-- Selection Summary -->
+                    <div v-if="selectedSignalsForCreation.length > 0" class="mt-3 p-2 bg-green-50 rounded border border-green-200">
+                      <p class="text-sm text-green-700">
+                        {{ selectedSignalsForCreation.length }} signal(s) selected for creation
+                      </p>
                     </div>
                   </div>
                   
@@ -105,13 +125,57 @@
             </div>
             
             <div class="bg-gray-50 px-4 py-3 sm:px-6 sm:flex sm:flex-row-reverse">
-              <button
-                @click="analyzeMessage"
-                :disabled="analyzing || !messageToAnalyze.trim()"
-                class="w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-primary-600 text-base font-medium text-white hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500 sm:ml-3 sm:w-auto sm:text-sm disabled:opacity-50"
-              >
-                {{ analyzing ? 'Analyzing...' : 'Analyze' }}
-              </button>
+              <!-- Show different buttons based on state -->
+              <template v-if="!analysisResult">
+                <!-- Initial analyze button -->
+                <button
+                  @click="analyzeMessage"
+                  :disabled="analyzing || !messageToAnalyze.trim()"
+                  class="w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-primary-600 text-base font-medium text-white hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500 sm:ml-3 sm:w-auto sm:text-sm disabled:opacity-50"
+                >
+                  {{ analyzing ? 'Analyzing...' : 'Analyze' }}
+                </button>
+              </template>
+              
+              <template v-else-if="analysisResult.is_signal && selectedSignalsForCreation.length > 0">
+                <!-- Create selected signals button -->
+                <button
+                  @click="createSelectedSignals"
+                  :disabled="creatingSignals"
+                  class="w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-green-600 text-base font-medium text-white hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 sm:ml-3 sm:w-auto sm:text-sm disabled:opacity-50"
+                >
+                  {{ creatingSignals ? 'Creating...' : `Create ${selectedSignalsForCreation.length} Signal${selectedSignalsForCreation.length > 1 ? 's' : ''}` }}
+                </button>
+                
+                <!-- Analyze new message button -->
+                <button
+                  @click="resetAnalysis"
+                  class="w-full inline-flex justify-center rounded-md border border-gray-300 shadow-sm px-4 py-2 bg-white text-base font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500 sm:ml-3 sm:w-auto sm:text-sm"
+                >
+                  New Analysis
+                </button>
+              </template>
+              
+              <template v-else-if="analysisResult.is_signal">
+                <!-- No signals selected -->
+                <button
+                  @click="resetAnalysis"
+                  class="w-full inline-flex justify-center rounded-md border border-gray-300 shadow-sm px-4 py-2 bg-white text-base font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500 sm:ml-3 sm:w-auto sm:text-sm"
+                >
+                  New Analysis
+                </button>
+              </template>
+              
+              <template v-else>
+                <!-- No signals found -->
+                <button
+                  @click="resetAnalysis"
+                  class="w-full inline-flex justify-center rounded-md border border-gray-300 shadow-sm px-4 py-2 bg-white text-base font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500 sm:ml-3 sm:w-auto sm:text-sm"
+                >
+                  New Analysis
+                </button>
+              </template>
+              
               <button
                 type="button"
                 @click="closeAnalyzer"
@@ -150,12 +214,13 @@ interface Signal {
   stop_loss?: number
   take_profit?: number
   quantity?: number
-  status: string
+  status: 'pending' | 'approved' | 'executed'
   created_at: string
-  source: string
+  source: 'manual_entry' | 'message_paste' | 'whatsapp' | 'telegram' | 'discord'
   original_message?: string
   remarks?: string
   analysis_notes?: string
+  enhanced_data?: any
 }
 
 const accountStore = useAccountStore()
@@ -169,6 +234,8 @@ const messageToAnalyze = ref('')
 const analysisResult = ref<any>(null)
 const selectedSignal = ref<Signal | null>(null)
 const showOrderModal = ref(false)
+const selectedSignalsForCreation = ref<number[]>([])
+const creatingSignals = ref(false)
 
 const filteredSignals = computed(() => {
   if (filterStatus.value === 'all') {
@@ -191,32 +258,9 @@ const fetchSignals = async () => {
   }
 }
 
-const showCreateSignalModal = () => {
-  selectedSignal.value = {
-    id: 0,
-    symbol: '',
-    action: 'BUY',
-    quantity: 100,
-    status: 'manual_entry',
-    created_at: new Date().toISOString(),
-    source: 'manual_entry'
-  }
-  showOrderModal.value = true
-}
-
 const approveSignal = async (signal: Signal) => {
   selectedSignal.value = signal
   showOrderModal.value = true
-}
-
-const rejectSignal = async (signalId: number) => {
-  try {
-    await axios.post(`/api/signals/${signalId}/approve`, { approved: false })
-    await fetchSignals()
-  } catch (error) {
-    console.error('Error rejecting signal:', error)
-    alert('Failed to reject signal')
-  }
 }
 
 const executeSignal = async (signalId: number) => {
@@ -262,6 +306,7 @@ const closeAnalyzer = () => {
   showMessageAnalyzer.value = false
   messageToAnalyze.value = ''
   analysisResult.value = null
+  selectedSignalsForCreation.value = []
 }
 
 const closeOrderModal = () => {
@@ -272,6 +317,50 @@ const closeOrderModal = () => {
 const onOrderExecuted = (result: any) => {
   alert(`Trade executed successfully! Order ID: ${result.broker_order_id}`)
   fetchSignals()
+}
+
+const toggleSignalSelection = (index: number) => {
+  if (selectedSignalsForCreation.value.includes(index)) {
+    selectedSignalsForCreation.value = selectedSignalsForCreation.value.filter((i) => i !== index)
+  } else {
+    selectedSignalsForCreation.value.push(index)
+  }
+}
+
+const resetAnalysis = () => {
+  analysisResult.value = null
+  selectedSignalsForCreation.value = []
+  messageToAnalyze.value = ''
+}
+
+const createSelectedSignals = async () => {
+  if (selectedSignalsForCreation.value.length === 0) return
+  
+  creatingSignals.value = true
+  try {
+    // Get selected signals
+    const signalsToCreate = selectedSignalsForCreation.value.map(index => ({
+      ...analysisResult.value.signals[index],
+      original_message: messageToAnalyze.value,
+      analysis_notes: analysisResult.value.analysis_notes
+    }))
+    
+    // Create signals via API
+    const response = await axios.post('/api/signals/create-from-analysis', {
+      signals: signalsToCreate
+    })
+    
+    // Success
+    alert(`Successfully created ${signalsToCreate.length} signal(s)!`)
+    await fetchSignals()  // Refresh the signals list
+    closeAnalyzer()
+    
+  } catch (error: any) {
+    console.error('Error creating signals:', error)
+    alert(error.response?.data?.detail || 'Failed to create signals')
+  } finally {
+    creatingSignals.value = false
+  }
 }
 
 onMounted(() => {
