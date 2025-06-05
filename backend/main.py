@@ -1299,11 +1299,12 @@ async def get_trades(
         cursor = conn.cursor()
         
         # Load trades from LOCAL DATABASE (not from Alpaca)
+        # Note: stop_loss and take_profit are stored in separate tables, not in trades table
         query = """
             SELECT id, user_id, account_id, signal_id, symbol, action, quantity,
-                   entry_price, exit_price, current_price, stop_loss, take_profit,
-                   pnl, floating_pnl, status, broker_order_id, broker_fill_price,
-                   opened_at, closed_at, close_reason, created_at, link_group_id
+                   entry_price, exit_price, current_price, pnl, floating_pnl, 
+                   status, broker_order_id, broker_fill_price, opened_at, 
+                   closed_at, close_reason, created_at, link_group_id
             FROM trades 
             WHERE user_id = %s AND account_id = %s
         """
@@ -1354,6 +1355,10 @@ async def get_trades(
             trade_dict['broker_order_id'] = trade_dict.get('broker_order_id') or ''
             trade_dict['signal_id'] = trade_dict.get('signal_id')
             trade_dict['close_reason'] = trade_dict.get('close_reason') or ''
+            
+            # Initialize stop_loss and take_profit as None (will be populated from separate tables below)
+            trade_dict['stop_loss'] = None
+            trade_dict['take_profit'] = None
             
             # Convert legacy 'open' status to 'filled' for compatibility
             if trade_dict.get('status') == 'open':
