@@ -107,7 +107,7 @@ async def auto_sync_trades():
                                     # Update trade status
                                     cursor.execute("""
                                         UPDATE trades 
-                                        SET status = 'filled',
+                                        SET status = 'closed',
                                             broker_fill_price = %s,
                                             entry_price = %s,
                                             quantity = %s,
@@ -1293,6 +1293,8 @@ async def get_trades(
     account = await get_active_account(current_user)
     if not account:
         raise HTTPException(status_code=400, detail="No active trading account")
+    
+
         
     conn = get_db_connection()
     try:
@@ -1320,8 +1322,19 @@ async def get_trades(
         trades = cursor.fetchall()
         trades_list = []
         
-        for trade in trades:
+        print(f"[DEBUG] Raw trades from DB: {len(trades)}")
+        
+        for i, trade in enumerate(trades):
             trade_dict = dict(zip([desc[0] for desc in cursor.description], trade))
+            
+            print(f"[DEBUG] Processing trade {i+1}/{len(trades)}: ID={trade_dict.get('id')}")
+            
+            # Allow trades even with missing fields - show everything
+            # Fill in missing fields with defaults
+            if not trade_dict.get('symbol'):
+                trade_dict['symbol'] = 'UNKNOWN'
+            if not trade_dict.get('action'):
+                trade_dict['action'] = 'BUY'
             
             # Normalize action field to uppercase
             if 'action' in trade_dict and trade_dict['action']:
@@ -1360,21 +1373,22 @@ async def get_trades(
             trade_dict['stop_loss'] = None
             trade_dict['take_profit'] = None
             
-            # Convert legacy 'open' status to 'filled' for compatibility
-            if trade_dict.get('status') == 'open':
-                trade_dict['status'] = 'filled'
+
             
             # Fetch take profit and stop loss levels for this trade
             trade_id = trade_dict['id']
             
+            # Use a separate cursor for levels to avoid column conflicts
+            levels_cursor = conn.cursor()
+            
             # Get take profit levels
-            cursor.execute("""
+            levels_cursor.execute("""
                 SELECT id, level_number, price, percentage, shares_quantity, status, executed_at, executed_price
                 FROM take_profit_levels 
                 WHERE trade_id = %s 
                 ORDER BY level_number
             """, (trade_id,))
-            tp_levels = cursor.fetchall()
+            tp_levels = levels_cursor.fetchall()
             trade_dict['take_profit_levels'] = []
             
             for tp in tp_levels:
@@ -1390,23 +1404,42 @@ async def get_trades(
                 })
             
             # Get stop loss levels
-            cursor.execute("""
+            levels_cursor.execute("""
                 SELECT id, price, status, executed_at, executed_price, executed_shares
                 FROM stop_loss_levels 
                 WHERE trade_id = %s 
                 ORDER BY created_at DESC
                 LIMIT 1
             """, (trade_id,))
-            sl_level = cursor.fetchone()
+            sl_level = levels_cursor.fetchone()
             
             if sl_level:
                 trade_dict['stop_loss'] = float(sl_level[1]) if sl_level[1] else None
                 trade_dict['stop_loss_status'] = sl_level[2]
                 trade_dict['stop_loss_executed_at'] = sl_level[3]
                 trade_dict['stop_loss_executed_price'] = float(sl_level[4]) if sl_level[4] else None
+                
+            levels_cursor.close()
             
-            trades_list.append(Trade(**trade_dict))
+            print(f"[DEBUG] About to create Trade model for ID {trade_dict.get('id')}")
+            try:
+                trade_model = Trade(**trade_dict)
+                trades_list.append(trade_model)
+                print(f"[DEBUG] Successfully added trade {trade_dict.get('id')} to list")
+            except Exception as e:
+                print(f"[TRADES API ERROR] Failed to create Trade model for ID {trade_dict.get('id')}:")
+                print(f"  Error: {e}")
+                print(f"  Error type: {type(e)}")
+                print(f"  Status: '{trade_dict.get('status')}'")
+                print(f"  Symbol: '{trade_dict.get('symbol')}'")
+                print(f"  Action: '{trade_dict.get('action')}'")
+                print(f"  Quantity: {trade_dict.get('quantity')} (type: {type(trade_dict.get('quantity'))})")
+                import traceback
+                traceback.print_exc()
+                # Don't re-raise - just skip this trade and continue
+                continue
         
+        print(f"[DEBUG] Final trades_list length: {len(trades_list)}")
         return trades_list
     finally:
         conn.close()
@@ -2699,11 +2732,8 @@ async def sync_trades_with_broker(current_user: User = Depends(get_current_user)
             alpaca_status = order['status']
             our_status = 'pending'
             if alpaca_status == 'filled':
-                # SELL orders should be marked as closed when filled
-                if order['side'].upper() == 'SELL':
-                    our_status = 'closed'
-                else:
-                    our_status = 'open'
+                # All filled orders should be marked as closed for consistency
+                our_status = 'closed'
             elif alpaca_status in ['canceled', 'cancelled', 'expired', 'rejected']:
                 our_status = 'cancelled'
             elif alpaca_status == 'partially_filled':
@@ -3464,10 +3494,8 @@ async def sync_dashboard(current_user: User = Depends(get_current_user)):
             alpaca_status = order['status']
             our_status = 'pending'
             if alpaca_status == 'filled':
-                if order['side'].upper() == 'SELL':
-                    our_status = 'closed'
-                else:
-                    our_status = 'open'
+                # All filled orders should be marked as closed for consistency
+                our_status = 'closed'
             elif alpaca_status in ['canceled', 'cancelled', 'expired', 'rejected']:
                 our_status = 'cancelled'
             elif alpaca_status == 'partially_filled':
@@ -3548,21 +3576,38 @@ async def sync_dashboard(current_user: User = Depends(get_current_user)):
                                 
                                 break
                 
-                # Always try to get the latest price for open trades
-                if our_status == 'open' and action == 'BUY':
+                # Always try to get the latest price for open trades and calculate floating P&L
+                if our_status == 'open':
                     if symbol in position_map:
                         current_price = float(position_map[symbol].get('current_price', 0))
                     else:
-                        market_data = await broker_client.get_market_data(symbol)
-                        current_price = float(market_data.get('last', 0))
-                    
-                    if entry_price is not None and quantity is not None:
                         try:
-                            floating_pnl = (current_price - float(entry_price)) * float(quantity) if action == 'BUY' else (float(entry_price) - current_price) * float(quantity)
-                        except Exception:
+                            market_data = await broker_client.get_market_data(symbol)
+                            current_price = float(market_data.get('last', 0))
+                            # If no last price, try to use bid/ask midpoint
+                            if current_price == 0:
+                                bid = float(market_data.get('bid', 0))
+                                ask = float(market_data.get('ask', 0))
+                                if bid > 0 and ask > 0:
+                                    current_price = (bid + ask) / 2
+                        except Exception as e:
+                            print(f"Error getting market data for {symbol}: {e}")
+                            current_price = float(order.get('filled_avg_price') or order.get('limit_price') or 0)
+                    
+                    # Calculate floating P&L for both BUY and SELL trades
+                    if entry_price is not None and quantity is not None and current_price > 0:
+                        try:
+                            if action == 'BUY':
+                                floating_pnl = (current_price - float(entry_price)) * float(quantity)
+                            else:  # SELL
+                                floating_pnl = (float(entry_price) - current_price) * float(quantity)
+                        except Exception as e:
+                            print(f"Error calculating floating P&L: {e}")
                             floating_pnl = 0
                 else:
-                    current_price = float(order.get('filled_avg_price') or order.get('limit_price') or 0)
+                    # For closed/cancelled trades, don't set current_price or floating_pnl
+                    current_price = None
+                    floating_pnl = None
                 
                 # Update existing trade
                 exit_price = None
@@ -3606,10 +3651,44 @@ async def sync_dashboard(current_user: User = Depends(get_current_user)):
             else:
                 # Insert new trade
                 exit_price = None
-                current_price = float(order.get('filled_avg_price') or order.get('limit_price') or 0)
-                if our_status == 'closed':
-                    exit_price = current_price
-                    current_price = None  # Don't set current_price for closed trades
+                current_price = None
+                floating_pnl = None
+                
+                if our_status == 'open':
+                    # For open trades, get current market price and calculate floating P&L
+                    symbol = order['symbol']
+                    action = order['side'].upper()
+                    entry_price = float(order.get('filled_avg_price') or order.get('limit_price') or 0)
+                    quantity = float(order.get('filled_qty') or order.get('qty', 0))
+                    
+                    if symbol in position_map:
+                        current_price = float(position_map[symbol].get('current_price', 0))
+                    else:
+                        try:
+                            market_data = await broker_client.get_market_data(symbol)
+                            current_price = float(market_data.get('last', 0))
+                            # If no last price, try to use bid/ask midpoint
+                            if current_price == 0:
+                                bid = float(market_data.get('bid', 0))
+                                ask = float(market_data.get('ask', 0))
+                                if bid > 0 and ask > 0:
+                                    current_price = (bid + ask) / 2
+                        except Exception as e:
+                            print(f"Error getting market data for {symbol}: {e}")
+                            current_price = entry_price
+                    
+                    # Calculate floating P&L
+                    if entry_price > 0 and quantity > 0 and current_price > 0:
+                        try:
+                            if action == 'BUY':
+                                floating_pnl = (current_price - entry_price) * quantity
+                            else:  # SELL
+                                floating_pnl = (entry_price - current_price) * quantity
+                        except Exception as e:
+                            print(f"Error calculating floating P&L for new trade: {e}")
+                            floating_pnl = 0
+                elif our_status == 'closed':
+                    exit_price = float(order.get('filled_avg_price') or order.get('limit_price') or 0)
                 
                 cursor.execute("""
                     INSERT INTO trades (
@@ -3618,7 +3697,7 @@ async def sync_dashboard(current_user: User = Depends(get_current_user)):
                         broker_order_id, created_at, opened_at,
                         current_price, pnl, floating_pnl, closed_at, close_reason
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """, (
                     current_user.id,
                     account.id,
