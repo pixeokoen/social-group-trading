@@ -13,6 +13,11 @@ import asyncio
 from jose import JWTError, jwt
 from contextlib import asynccontextmanager
 from math import floor
+import traceback
+import logging
+import psycopg2
+
+logger = logging.getLogger(__name__)
 
 from models import (
     Signal, Trade, User, SignalCreate, TradeCreate, 
@@ -20,13 +25,20 @@ from models import (
     MessageAnalysisRequest, MessageAnalysisResponse,
     Account, AccountCreate, AccountUpdate, UserSession,
     SignalSource, SignalSourceCreate, SignalSourceUpdate, SourceAccountMapping,
-    UserCreate
+    UserCreate,
+    # Database compare models
+    DatabaseConnectionCreate, DatabaseConnectionUpdate, TestConnectionResult,
+    SchemaComparisonCreate, ApplyMigrationsRequest
 )
 from db import get_db_connection
 from auth import get_current_user, create_access_token, authenticate_user, register
 from alpaca_client import AlpacaClient
 from signal_parser import signal_parser
 from message_analyzer import message_analyzer
+from services.database_compare_service import DatabaseCompareService
+
+# Initialize database compare service
+db_compare_service = DatabaseCompareService()
 
 # Background task for auto-sync
 async def auto_sync_trades():
@@ -368,6 +380,7 @@ async def execute_level_as_market_order(client, level, current_price, level_type
         level_id = level['id']
         trade_id = level['trade_id']
         original_action = level['action']
+        user_id = level['user_id']
         
         # Determine execution action (opposite of original trade)
         execution_action = 'SELL' if original_action.upper() == 'BUY' else 'BUY'
@@ -385,6 +398,75 @@ async def execute_level_as_market_order(client, level, current_price, level_type
         
         if order_result and 'id' in order_result:
             broker_order_id = order_result['id']
+            
+            # Get account info for the trade
+            cursor.execute("""
+                SELECT account_id FROM trades WHERE id = %s
+            """, (trade_id,))
+            account_id = cursor.fetchone()[0]
+            
+            # Calculate P&L for this level execution
+            cursor.execute("""
+                SELECT entry_price, broker_fill_price FROM trades WHERE id = %s
+            """, (trade_id,))
+            entry_data = cursor.fetchone()
+            entry_price = float(entry_data[0] or entry_data[1] or 0)
+            
+            if original_action.upper() == 'BUY':
+                realized_pnl = (current_price - entry_price) * shares
+            else:  # Short position
+                realized_pnl = (entry_price - current_price) * shares
+            
+            # Create new trade record for the level execution
+            cursor.execute("""
+                INSERT INTO trades (
+                    user_id, account_id, symbol, action, quantity,
+                    entry_price, broker_fill_price, status,
+                    broker_order_id, created_at, opened_at,
+                    current_price, pnl, floating_pnl,
+                    closed_at, close_reason
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
+            """, (
+                user_id,
+                account_id,
+                symbol,
+                execution_action,
+                shares,
+                current_price,
+                current_price,
+                'filled',
+                broker_order_id,
+                datetime.utcnow(),
+                datetime.utcnow(),
+                current_price,
+                realized_pnl,
+                0,  # No floating P&L for immediate execution
+                datetime.utcnow(),
+                f'{level_type}_auto'
+            ))
+            
+            new_trade_id = cursor.fetchone()[0]
+            
+            # Link the original trade and the new execution trade
+            cursor.execute("""
+                SELECT link_group_id FROM trades WHERE id = %s
+            """, (trade_id,))
+            existing_link_group = cursor.fetchone()[0]
+            
+            if existing_link_group:
+                # Use existing link group
+                cursor.execute("""
+                    UPDATE trades 
+                    SET link_group_id = %s 
+                    WHERE id = %s
+                """, (existing_link_group, new_trade_id))
+                print(f"🔗 Added execution trade {new_trade_id} to existing link group: {existing_link_group}")
+            else:
+                # Create new link group for both trades
+                link_group_id = link_trades(cursor, [trade_id, new_trade_id])
+                print(f"🔗 Created new link group: {link_group_id}")
             
             # Update database with execution
             if level_type == 'take_profit':
@@ -409,6 +491,7 @@ async def execute_level_as_market_order(client, level, current_price, level_type
                 """, (datetime.utcnow(), current_price, shares, broker_order_id, level_id))
             
             print(f"✅ {level_type.replace('_', ' ').title()} executed: {symbol} {shares} shares at ${current_price} (Order: {broker_order_id})")
+            print(f"💰 Realized P&L: ${realized_pnl:.2f}")
             
             # TODO: Send notification to user
             return True
@@ -418,26 +501,40 @@ async def execute_level_as_market_order(client, level, current_price, level_type
             
     except Exception as e:
         print(f"❌ Error executing {level_type} level {level_id}: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 # Lifespan context manager for background tasks
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
-    print("Starting fast background trade monitoring (2s intervals)...")
-    print("🔄 Trade fill detection: 2 seconds")
-    print("🎯 Take profit/stop loss monitoring: 2 seconds") 
-    task = asyncio.create_task(auto_sync_trades())
+    print("🎯 Starting Centralized Script Manager...")
+    
+    # Import and start script manager
+    try:
+        from script_manager import script_manager
+        await script_manager.start_all_processes()
+        print("✅ Script Manager started successfully")
+    except ImportError:
+        # Fallback to old system if script manager not available
+        print("⚠️  Script Manager not found, using legacy auto-sync")
+        task = asyncio.create_task(auto_sync_trades())
     
     yield
     
     # Shutdown
-    print("Stopping background sync...")
-    task.cancel()
+    print("🛑 Stopping Script Manager...")
     try:
-        await task
-    except asyncio.CancelledError:
-        pass
+        from script_manager import script_manager
+        await script_manager.shutdown()
+    except ImportError:
+        if 'task' in locals():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
 app = FastAPI(title="Trade Signal Filter & IBKR Execution API", lifespan=lifespan)
 
@@ -1300,8 +1397,8 @@ async def get_trades(
     try:
         cursor = conn.cursor()
         
-        # Load trades from LOCAL DATABASE (not from Alpaca)
-        # Note: stop_loss and take_profit are stored in separate tables, not in trades table
+        # Load trades from LOCAL DATABASE with levels in a single optimized query
+        # First get all trades
         query = """
             SELECT id, user_id, account_id, signal_id, symbol, action, quantity,
                    entry_price, exit_price, current_price, pnl, floating_pnl, 
@@ -1320,14 +1417,63 @@ async def get_trades(
         cursor.execute(query, params)
         
         trades = cursor.fetchall()
+        # IMPORTANT: Capture the column descriptions for the trades query before executing other queries
+        trades_columns = [desc[0] for desc in cursor.description]
+        trade_ids = [trade[0] for trade in trades]
+        
+        # Fetch ALL take profit levels for all trades in one query
+        tp_levels_by_trade = {}
+        if trade_ids:
+            cursor.execute("""
+                SELECT trade_id, id, level_number, price, percentage, shares_quantity, status, executed_at, executed_price
+                FROM take_profit_levels 
+                WHERE trade_id = ANY(%s)
+                ORDER BY trade_id, level_number
+            """, (trade_ids,))
+            
+            for tp in cursor.fetchall():
+                trade_id = tp[0]
+                if trade_id not in tp_levels_by_trade:
+                    tp_levels_by_trade[trade_id] = []
+                tp_levels_by_trade[trade_id].append({
+                    'id': tp[1],
+                    'level_number': tp[2],
+                    'price': float(tp[3]) if tp[3] else 0,
+                    'percentage': float(tp[4]) if tp[4] else 0,
+                    'shares_quantity': float(tp[5]) if tp[5] else 0,
+                    'status': tp[6],
+                    'executed_at': tp[7],
+                    'executed_price': float(tp[8]) if tp[8] else None
+                })
+        
+        # Fetch ALL stop loss levels for all trades in one query
+        sl_levels_by_trade = {}
+        if trade_ids:
+            cursor.execute("""
+                SELECT DISTINCT ON (trade_id) trade_id, id, price, status, executed_at, executed_price, executed_shares
+                FROM stop_loss_levels 
+                WHERE trade_id = ANY(%s)
+                ORDER BY trade_id, created_at DESC
+            """, (trade_ids,))
+            
+            for sl in cursor.fetchall():
+                trade_id = sl[0]
+                sl_levels_by_trade[trade_id] = {
+                    'id': sl[1],
+                    'price': float(sl[2]) if sl[2] else None,
+                    'status': sl[3],
+                    'executed_at': sl[4],
+                    'executed_price': float(sl[5]) if sl[5] else None,
+                    'executed_shares': float(sl[6]) if sl[6] else None
+                }
+        
         trades_list = []
         
-        print(f"[DEBUG] Raw trades from DB: {len(trades)}")
+        # Debug logging removed - too verbose for production
+        logger.debug(f"Processing {len(trades)} trades from database")
         
         for i, trade in enumerate(trades):
-            trade_dict = dict(zip([desc[0] for desc in cursor.description], trade))
-            
-            print(f"[DEBUG] Processing trade {i+1}/{len(trades)}: ID={trade_dict.get('id')}")
+            trade_dict = dict(zip(trades_columns, trade))
             
             # Allow trades even with missing fields - show everything
             # Fill in missing fields with defaults
@@ -1369,63 +1515,27 @@ async def get_trades(
             trade_dict['signal_id'] = trade_dict.get('signal_id')
             trade_dict['close_reason'] = trade_dict.get('close_reason') or ''
             
-            # Initialize stop_loss and take_profit as None (will be populated from separate tables below)
+            # Initialize stop_loss and take_profit as None (will be populated from pre-fetched data)
             trade_dict['stop_loss'] = None
             trade_dict['take_profit'] = None
             
-
-            
-            # Fetch take profit and stop loss levels for this trade
+            # Get trade ID for lookups
             trade_id = trade_dict['id']
             
-            # Use a separate cursor for levels to avoid column conflicts
-            levels_cursor = conn.cursor()
+            # Use pre-fetched take profit levels
+            trade_dict['take_profit_levels'] = tp_levels_by_trade.get(trade_id, [])
             
-            # Get take profit levels
-            levels_cursor.execute("""
-                SELECT id, level_number, price, percentage, shares_quantity, status, executed_at, executed_price
-                FROM take_profit_levels 
-                WHERE trade_id = %s 
-                ORDER BY level_number
-            """, (trade_id,))
-            tp_levels = levels_cursor.fetchall()
-            trade_dict['take_profit_levels'] = []
-            
-            for tp in tp_levels:
-                trade_dict['take_profit_levels'].append({
-                    'id': tp[0],
-                    'level_number': tp[1],
-                    'price': float(tp[2]) if tp[2] else 0,
-                    'percentage': float(tp[3]) if tp[3] else 0,
-                    'shares_quantity': float(tp[4]) if tp[4] else 0,
-                    'status': tp[5],
-                    'executed_at': tp[6],
-                    'executed_price': float(tp[7]) if tp[7] else None
-                })
-            
-            # Get stop loss levels
-            levels_cursor.execute("""
-                SELECT id, price, status, executed_at, executed_price, executed_shares
-                FROM stop_loss_levels 
-                WHERE trade_id = %s 
-                ORDER BY created_at DESC
-                LIMIT 1
-            """, (trade_id,))
-            sl_level = levels_cursor.fetchone()
-            
+            # Use pre-fetched stop loss level
+            sl_level = sl_levels_by_trade.get(trade_id)
             if sl_level:
-                trade_dict['stop_loss'] = float(sl_level[1]) if sl_level[1] else None
-                trade_dict['stop_loss_status'] = sl_level[2]
-                trade_dict['stop_loss_executed_at'] = sl_level[3]
-                trade_dict['stop_loss_executed_price'] = float(sl_level[4]) if sl_level[4] else None
-                
-            levels_cursor.close()
+                trade_dict['stop_loss'] = sl_level['price']
+                trade_dict['stop_loss_status'] = sl_level['status']
+                trade_dict['stop_loss_executed_at'] = sl_level['executed_at']
+                trade_dict['stop_loss_executed_price'] = sl_level['executed_price']
             
-            print(f"[DEBUG] About to create Trade model for ID {trade_dict.get('id')}")
             try:
                 trade_model = Trade(**trade_dict)
                 trades_list.append(trade_model)
-                print(f"[DEBUG] Successfully added trade {trade_dict.get('id')} to list")
             except Exception as e:
                 print(f"[TRADES API ERROR] Failed to create Trade model for ID {trade_dict.get('id')}:")
                 print(f"  Error: {e}")
@@ -1439,7 +1549,7 @@ async def get_trades(
                 # Don't re-raise - just skip this trade and continue
                 continue
         
-        print(f"[DEBUG] Final trades_list length: {len(trades_list)}")
+        logger.debug(f"Successfully processed {len(trades_list)} trades")
         return trades_list
     finally:
         conn.close()
@@ -2011,18 +2121,73 @@ async def get_analytics(current_user: User = Depends(get_current_user)):
             
             recent_trades.append(trade_dict)
         
-        # Combine results
-        analytics = dict(zip([desc[0] for desc in cursor.description], signal_stats))
-        trade_dict = dict(zip(['total_trades', 'open_trades', 'pending_trades', 'winning_trades', 
-                               'losing_trades', 'total_pnl', 'avg_pnl', 'avg_trade_duration_hours', 
-                               'total_floating_pnl'], 
-                               trade_stats))
-        analytics.update(trade_dict)
+        # Get floating P&L from actual Alpaca positions (more accurate than trades table)
+        broker_client = get_broker_client(account)
+        floating_pnl = 0.0
         
-        # Convert Decimal to float for JSON serialization
-        analytics['total_pnl'] = float(analytics['total_pnl'])
-        analytics['avg_pnl'] = float(analytics['avg_pnl'])
-        analytics['total_floating_pnl'] = float(analytics['total_floating_pnl'])
+        print(f"Analytics: Account {account.name}, broker_client: {broker_client is not None}")
+        
+        if broker_client:
+            try:
+                positions = await broker_client.get_positions()
+                print(f"Analytics: Retrieved {len(positions)} positions")
+                
+                for pos in positions:
+                    symbol = pos.get('symbol', 'unknown')
+                    market_value = pos.get('market_value', 0)
+                    cost_basis = pos.get('cost_basis', 0)
+                    
+                    # Ensure we have valid numbers
+                    if market_value is not None and cost_basis is not None:
+                        try:
+                            market_value_float = float(market_value)
+                            cost_basis_float = float(cost_basis)
+                            position_pnl = market_value_float - cost_basis_float
+                            floating_pnl += position_pnl
+                            print(f"Analytics: {symbol} P&L: ${position_pnl:.2f} (MV: ${market_value_float:.2f}, CB: ${cost_basis_float:.2f})")
+                            
+                        except (ValueError, TypeError) as e:
+                            print(f"Analytics: ERROR converting {symbol} values: {e}")
+                            continue
+                    else:
+                        print(f"Analytics: ERROR - {symbol} has None market_value or cost_basis")
+                            
+                print(f"Analytics: FINAL floating P&L: ${floating_pnl:.2f}")
+                
+            except Exception as e:
+                print(f"Analytics: ERROR getting positions: {e}")
+                traceback.print_exc()
+                
+                # Fallback to trades table floating_pnl if positions fail
+                try:
+                    fallback_value = trade_stats[8] if trade_stats[8] is not None else 0
+                    floating_pnl = float(fallback_value)
+                    print(f"Analytics: Using fallback: ${floating_pnl:.2f}")
+                except (ValueError, TypeError, IndexError):
+                    floating_pnl = 0.0
+                    print(f"Analytics: Fallback failed, using 0.0")
+        else:
+            print("Analytics: No broker client available")
+            # Try fallback to trades table
+            try:
+                fallback_value = trade_stats[8] if trade_stats[8] is not None else 0
+                floating_pnl = float(fallback_value)
+                print(f"Analytics: Using trades table fallback: ${floating_pnl:.2f}")
+            except (ValueError, TypeError, IndexError):
+                floating_pnl = 0.0
+                print(f"Analytics: No fallback available, using 0.0")
+        
+        # Combine results (excluding signal stats we don't need)
+        analytics = {
+            'total_trades': trade_stats[0],
+            'open_trades': trade_stats[1], 
+            'pending_trades': trade_stats[2],
+            'winning_trades': trade_stats[3],
+            'losing_trades': trade_stats[4],
+            'total_pnl': float(trade_stats[5]),
+            'avg_pnl': float(trade_stats[6]),
+            'floating_pnl': floating_pnl  # Use positions-based floating P&L
+        }
         
         # Use account-level win rate and realized P&L if available
         if account_metrics:
@@ -4087,6 +4252,66 @@ async def get_trade_levels(trade_id: int, current_user: User = Depends(get_curre
     finally:
         conn.close()
 
+@app.get("/api/script-manager/status")
+async def get_script_manager_status():
+    """Get current status of all automated scripts and processes"""
+    try:
+        # Try to import script manager
+        try:
+            from script_manager import script_manager
+            status = script_manager.get_status()
+            api_usage = script_manager.get_api_usage_summary()
+        except ImportError as import_error:
+            print(f"Script manager not available: {import_error}")
+            # Return a placeholder response when script manager is not available
+            return {
+                "processes": {},
+                "api_usage": {
+                    "total_calls_last_minute": 0,
+                    "estimated_calls_per_hour": 0,
+                    "usage_by_process": {},
+                    "timestamp": datetime.now().isoformat()
+                },
+                "total_processes": 0,
+                "running_processes": 0,
+                "error_processes": 0,
+                "status": "Script Manager not available - using legacy system"
+            }
+        
+        # Convert dataclasses to dicts for JSON response
+        status_dict = {}
+        for process_name, process_status in status.items():
+            status_dict[process_name] = {
+                "process_name": process_status.process_name,
+                "status": process_status.status,
+                "last_update": process_status.last_update.isoformat(),
+                "next_run": process_status.next_run.isoformat() if process_status.next_run else None,
+                "metrics": {
+                    "last_run": process_status.metrics.last_run.isoformat() if process_status.metrics.last_run else None,
+                    "last_success": process_status.metrics.last_success.isoformat() if process_status.metrics.last_success else None,
+                    "last_error": process_status.metrics.last_error.isoformat() if process_status.metrics.last_error else None,
+                    "total_runs": process_status.metrics.total_runs,
+                    "success_count": process_status.metrics.success_count,
+                    "error_count": process_status.metrics.error_count,
+                    "avg_duration": process_status.metrics.avg_duration,
+                    "api_calls_last_minute": process_status.metrics.api_calls_last_minute,
+                    "last_error_message": process_status.metrics.last_error_message
+                },
+                "resource_usage": process_status.resource_usage
+            }
+        
+        return {
+            "processes": status_dict,
+            "api_usage": api_usage,
+            "total_processes": len(status_dict),
+            "running_processes": len([s for s in status_dict.values() if s["status"] == "running"]),
+            "error_processes": len([s for s in status_dict.values() if s["status"] == "error"])
+        }
+        
+    except Exception as e:
+        print(f"Error getting script manager status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/api/monitoring/levels")
 async def get_monitoring_levels(current_user: User = Depends(get_current_user)):
     """Get all active take profit and stop loss levels for monitoring"""
@@ -4164,6 +4389,872 @@ async def get_monitoring_levels(current_user: User = Depends(get_current_user)):
         
     except Exception as e:
         print(f"Error getting monitoring levels: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
+
+def generate_link_group_id() -> str:
+    """Generate a unique link group ID for connecting related trades"""
+    import uuid
+    return f"lg_{uuid.uuid4().hex[:12]}"
+
+def link_trades_helper(cursor, trade_ids: List[int], link_group_id: str = None) -> str:
+    """Link multiple trades together with the same link_group_id"""
+    if not link_group_id:
+        link_group_id = generate_link_group_id()
+    
+    # Update all trades with the same link_group_id
+    for trade_id in trade_ids:
+        cursor.execute("""
+            UPDATE trades 
+            SET link_group_id = %s 
+            WHERE id = %s
+        """, (link_group_id, trade_id))
+    
+    print(f"🔗 Linked trades {trade_ids} with group ID: {link_group_id}")
+    return link_group_id
+
+@app.post("/api/trades/{trade_id}/sell-all")
+async def sell_all_remaining_shares(
+    trade_id: int,
+    current_user: User = Depends(get_current_user)
+):
+    """Sell all remaining shares and override pending take profit/stop loss levels"""
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        
+        # Get the original trade
+        cursor.execute("""
+            SELECT t.*, a.id as account_id, a.api_key, a.api_secret, a.account_type, a.broker
+            FROM trades t
+            JOIN accounts a ON t.account_id = a.id
+            WHERE t.id = %s AND t.user_id = %s
+        """, (trade_id, current_user.id))
+        
+        trade_data = cursor.fetchone()
+        if not trade_data:
+            raise HTTPException(status_code=404, detail="Trade not found")
+        
+        # Convert to dict for easier access
+        columns = [desc[0] for desc in cursor.description]
+        trade = dict(zip(columns, trade_data))
+        
+        print(f"🎯 SELL ALL: Trade {trade_id} ({trade['symbol']})")
+        
+        # Calculate remaining shares 
+        cursor.execute("""
+            SELECT COALESCE(SUM(shares_quantity), 0) as executed_shares
+            FROM take_profit_levels 
+            WHERE trade_id = %s AND status = 'executed'
+        """, (trade_id,))
+        executed_tp_shares = cursor.fetchone()[0] or 0
+        
+        # Check pending levels that might be tying up shares at broker
+        cursor.execute("""
+            SELECT COALESCE(SUM(shares_quantity), 0) as pending_shares
+            FROM take_profit_levels 
+            WHERE trade_id = %s AND status = 'pending'
+        """, (trade_id,))
+        pending_tp_shares = cursor.fetchone()[0] or 0
+        
+        total_shares = float(trade['quantity'])
+        remaining_shares = total_shares - float(executed_tp_shares)
+        
+        print(f"   Shares: {remaining_shares} available ({total_shares} total - {executed_tp_shares} executed)")
+        if pending_tp_shares > 0:
+            print(f"   Warning: {pending_tp_shares} shares tied up in pending TP orders")
+        
+        if remaining_shares <= 0:
+            raise HTTPException(status_code=400, detail="No remaining shares to sell")
+        
+        # Get current market price
+        account = type('Account', (), {
+            'id': trade['account_id'],
+            'api_key': trade['api_key'],
+            'api_secret': trade['api_secret'],
+            'account_type': trade['account_type'],
+            'broker': trade['broker'],
+            'base_url': None
+        })()
+        
+        broker_client = get_broker_client(account)
+        if not broker_client:
+            raise HTTPException(status_code=400, detail="Unable to connect to broker")
+        
+        # Get current market price
+        market_data = await broker_client.get_market_data(trade['symbol'])
+        current_price = market_data.get('last', 0)
+        if not current_price or current_price <= 0:
+            # Fallback to bid/ask average
+            bid = market_data.get('bid', 0)
+            ask = market_data.get('ask', 0)
+            if bid > 0 and ask > 0:
+                current_price = (bid + ask) / 2
+            else:
+                raise HTTPException(status_code=400, detail="Unable to get current market price")
+        
+        print(f"   Current price: ${current_price}")
+        
+        # Place market sell order
+        sell_action = 'SELL' if trade['action'] == 'BUY' else 'BUY'
+        print(f"   Placing {sell_action} order for {remaining_shares} shares")
+        
+        try:
+            broker_order_id = await broker_client.place_order(
+                symbol=trade['symbol'],
+                action=sell_action,
+                quantity=remaining_shares,
+                order_type='market',
+                time_in_force='day'
+            )
+        except Exception as broker_error:
+            error_msg = str(broker_error)
+            
+            # Check if it's an insufficient quantity error
+            if "insufficient qty available" in error_msg:
+                # Parse the available quantity from Alpaca error
+                import re
+                available_match = re.search(r'"available":"(\d+(?:\.\d+)?)"', error_msg)
+                available_qty = float(available_match.group(1)) if available_match else 0
+                
+                print(f"   Broker says only {available_qty} shares available (we calculated {remaining_shares})")
+                
+                if pending_tp_shares > 0:
+                    print(f"   Canceling {pending_tp_shares} pending TP shares to free up for sale...")
+                    
+                    # Cancel pending TP levels at broker
+                    cursor.execute("""
+                        SELECT broker_order_id FROM take_profit_levels 
+                        WHERE trade_id = %s AND status = 'pending' AND broker_order_id IS NOT NULL
+                    """, (trade_id,))
+                    pending_orders = cursor.fetchall()
+                    
+                    for (broker_order_id_to_cancel,) in pending_orders:
+                        try:
+                            await broker_client.cancel_order(broker_order_id_to_cancel)
+                        except Exception as cancel_error:
+                            print(f"   Warning: Failed to cancel order {broker_order_id_to_cancel}")
+                    
+                    # Update database to reflect cancellation
+                    cursor.execute("""
+                        UPDATE take_profit_levels 
+                        SET status = 'cancelled_for_sell_all',
+                            override_date = %s
+                        WHERE trade_id = %s AND status = 'pending'
+                    """, (datetime.utcnow(), trade_id))
+                    
+                    # Retry with original quantity
+                    broker_order_id = await broker_client.place_order(
+                        symbol=trade['symbol'],
+                        action=sell_action,
+                        quantity=remaining_shares,
+                        order_type='market',
+                        time_in_force='day'
+                    )
+                    print(f"   Retry successful after canceling pending orders")
+                
+                elif available_qty > 0 and available_qty < remaining_shares:
+                    # No pending orders to cancel, but broker has fewer shares than we think
+                    print(f"   Database/broker mismatch detected")
+                    print(f"   Selling available {available_qty} shares instead of calculated {remaining_shares}")
+                    
+                    # Sell only what's available at broker
+                    broker_order_id = await broker_client.place_order(
+                        symbol=trade['symbol'],
+                        action=sell_action,
+                        quantity=available_qty,
+                        order_type='market',
+                        time_in_force='day'
+                    )
+                    
+                    # Update remaining_shares for P&L calculation
+                    remaining_shares = available_qty
+                    print(f"   Successfully sold {available_qty} shares (broker limit)")
+                
+                else:
+                    raise HTTPException(status_code=400, detail=f"No shares available to sell. Broker reports: {available_qty} available")
+            
+            else:
+                raise HTTPException(status_code=400, detail=f"Broker error: {error_msg}")
+        
+        if not broker_order_id:
+            raise HTTPException(status_code=500, detail="Failed to place sell order with broker")
+        
+        # Calculate realized P&L
+        entry_price = float(trade['entry_price'] or trade['broker_fill_price'] or 0)
+        if trade['action'] == 'BUY':
+            realized_pnl = (current_price - entry_price) * remaining_shares
+        else:  # Short position
+            realized_pnl = (entry_price - current_price) * remaining_shares
+        
+        print(f"   Order placed: {broker_order_id} | P&L: ${realized_pnl:.2f}")
+        
+        # Create new sell trade record
+        cursor.execute("""
+            INSERT INTO trades (
+                user_id, account_id, symbol, action, quantity,
+                entry_price, broker_fill_price, status,
+                broker_order_id, created_at, opened_at,
+                current_price, pnl, floating_pnl,
+                closed_at, close_reason
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING id
+        """, (
+            current_user.id,
+            trade['account_id'],
+            trade['symbol'],
+            sell_action,
+            remaining_shares,
+            current_price,
+            current_price,
+            'closed',  # Use 'closed' instead of 'filled' for immediate sell
+            broker_order_id,
+            datetime.utcnow(),
+            datetime.utcnow(),
+            current_price,
+            realized_pnl,
+            0,  # No floating P&L for immediate sell
+            datetime.utcnow(),
+            'Position closed'  # Use standard close reason
+        ))
+        
+        sell_trade_id = cursor.fetchone()[0]
+        
+        # Link the original trade and new sell trade
+        existing_link_group = trade.get('link_group_id')
+        if existing_link_group:
+            # Use existing link group
+            link_group_id = existing_link_group
+            cursor.execute("""
+                UPDATE trades 
+                SET link_group_id = %s 
+                WHERE id = %s
+            """, (link_group_id, sell_trade_id))
+        else:
+            # Create new link group for both trades
+            link_group_id = link_trades_helper(cursor, [trade_id, sell_trade_id])
+        
+        # Override all pending take profit levels
+        cursor.execute("""
+            UPDATE take_profit_levels 
+            SET status = 'cancelled_by_sell_all',
+                override_price = %s,
+                override_date = %s
+            WHERE trade_id = %s AND status = 'pending'
+        """, (current_price, datetime.utcnow(), trade_id))
+        
+        overridden_tp_count = cursor.rowcount
+        
+        # Override active stop loss levels
+        cursor.execute("""
+            UPDATE stop_loss_levels 
+            SET status = 'cancelled_by_sell_all',
+                override_price = %s,
+                override_date = %s
+            WHERE trade_id = %s AND status = 'active'
+        """, (current_price, datetime.utcnow(), trade_id))
+        
+        overridden_sl_count = cursor.rowcount
+        
+        conn.commit()
+        
+        print(f"✅ SELL ALL COMPLETE: {remaining_shares} shares @ ${current_price}, P&L: ${realized_pnl:.2f}")
+        if overridden_tp_count > 0:
+            print(f"   Cancelled {overridden_tp_count} TP levels")
+        if overridden_sl_count > 0:
+            print(f"   Cancelled {overridden_sl_count} SL levels")
+        
+        return {
+            "message": "Sell All executed successfully",
+            "sell_order_id": broker_order_id,
+            "sell_trade_id": sell_trade_id,
+            "shares_sold": remaining_shares,
+            "sell_price": current_price,
+            "realized_pnl": realized_pnl,
+            "overridden_tp_levels": overridden_tp_count,
+            "overridden_sl_levels": overridden_sl_count,
+            "link_group_id": link_group_id
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        conn.rollback()
+        print(f"❌ Error in sell all: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
+
+@app.post("/api/trades/current-prices")
+async def get_current_prices(
+    request: Dict[str, List[str]],
+    current_user: User = Depends(get_current_user)
+):
+    """Get current market prices for a list of symbols"""
+    try:
+        symbols = request.get('symbols', [])
+        # Reduced logging for price updates to minimize noise during debugging
+        if not symbols:
+            return {}
+        
+        # Get user's active account to use for price data
+        active_account = await get_active_account(current_user)
+        if not active_account:
+            raise HTTPException(status_code=400, detail="No active account found")
+        
+        # Get broker client
+        client = get_broker_client(active_account)
+        if not client:
+            raise HTTPException(status_code=400, detail="Unable to connect to broker")
+        
+        # Get current prices for all symbols
+        price_data = {}
+        
+        for symbol in symbols:
+            try:
+                # Get market data from broker (which includes current price)
+                market_data = await client.get_market_data(symbol)
+                
+                if market_data:
+                    # Try 'last' price first (most recent trade)
+                    current_price = market_data.get('last')
+                    if current_price and current_price > 0:
+                        price_data[symbol] = float(current_price)
+                    else:
+                        # Fallback to bid/ask midpoint
+                        bid = market_data.get('bid')
+                        ask = market_data.get('ask')
+                        if bid and ask and bid > 0 and ask > 0:
+                            price_data[symbol] = float((bid + ask) / 2)
+                        
+            except Exception as e:
+                print(f"❌ Error getting price for {symbol}: {e}")
+                continue
+        return price_data
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Error getting current prices: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/trades/cleanup-orphaned-levels")
+async def cleanup_orphaned_levels(current_user: User = Depends(get_current_user)):
+    """Clean up orphaned take profit levels for closed trades"""
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        
+        # Find all closed trades with pending take profit levels for this user
+        cursor.execute("""
+            SELECT DISTINCT t.id, t.symbol, COUNT(tp.id) as pending_count
+            FROM trades t
+            JOIN take_profit_levels tp ON t.id = tp.trade_id
+            WHERE t.user_id = %s 
+            AND t.status = 'closed' 
+            AND tp.status = 'pending'
+            GROUP BY t.id, t.symbol
+            ORDER BY t.id
+        """, (current_user.id,))
+        
+        orphaned_trades = cursor.fetchall()
+        
+        if not orphaned_trades:
+            return {
+                "message": "No orphaned take profit levels found",
+                "fixed_trades": 0,
+                "fixed_levels": 0
+            }
+        
+        total_fixed_levels = 0
+        
+        for trade_id, symbol, pending_count in orphaned_trades:
+            # Cancel the orphaned levels
+            cursor.execute("""
+                UPDATE take_profit_levels 
+                SET status = 'cancelled',
+                    executed_at = NOW()
+                WHERE trade_id = %s AND status = 'pending'
+            """, (trade_id,))
+            
+            total_fixed_levels += cursor.rowcount
+            
+            print(f"Cleaned up {cursor.rowcount} orphaned TP levels for trade {trade_id} ({symbol})")
+        
+        conn.commit()
+        
+        return {
+            "message": f"Successfully cleaned up orphaned take profit levels",
+            "fixed_trades": len(orphaned_trades),
+            "fixed_levels": total_fixed_levels,
+            "details": [
+                {"trade_id": trade[0], "symbol": trade[1], "levels_cancelled": trade[2]}
+                for trade in orphaned_trades
+            ]
+        }
+        
+    except Exception as e:
+        conn.rollback()
+        print(f"Error cleaning up orphaned levels: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
+
+# Database Compare APIs
+from services.database_compare_service import DatabaseCompareService
+
+db_compare_service = DatabaseCompareService()
+
+@app.get("/api/database-connections")
+async def get_database_connections(current_user: User = Depends(get_current_user)):
+    """Get all database connections for the current user"""
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, name, description, host, port, database_name, username,
+                   connection_type, is_active, created_at, updated_at, 
+                   last_tested_at, test_result, user_id
+            FROM database_connections 
+            WHERE user_id = %s 
+            ORDER BY created_at DESC
+        """, (current_user.id,))
+        
+        connections = []
+        columns = [desc[0] for desc in cursor.description]
+        for row in cursor.fetchall():
+            conn_dict = dict(zip(columns, row))
+            connections.append(conn_dict)
+        
+        return connections
+    finally:
+        conn.close()
+
+@app.post("/api/database-connections")
+async def create_database_connection(
+    connection: DatabaseConnectionCreate,
+    current_user: User = Depends(get_current_user)
+):
+    """Create a new database connection"""
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        
+        # Encrypt the password
+        encrypted_password = db_compare_service.encrypt_password(connection.password)
+        
+        cursor.execute("""
+            INSERT INTO database_connections 
+            (name, description, host, port, database_name, username, password_encrypted,
+             connection_type, is_active, user_id)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING id, name, description, host, port, database_name, username,
+                     connection_type, is_active, created_at, updated_at, 
+                     last_tested_at, test_result, user_id
+        """, (
+            connection.name, connection.description, connection.host, connection.port,
+            connection.database_name, connection.username, encrypted_password,
+            connection.connection_type.value, connection.is_active, current_user.id
+        ))
+        
+        result = cursor.fetchone()
+        columns = [desc[0] for desc in cursor.description]
+        conn_dict = dict(zip(columns, result))
+        
+        conn.commit()
+        return conn_dict
+        
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
+
+@app.put("/api/database-connections/{connection_id}")
+async def update_database_connection(
+    connection_id: int,
+    connection_update: DatabaseConnectionUpdate,
+    current_user: User = Depends(get_current_user)
+):
+    """Update a database connection"""
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        
+        # Check if connection exists and belongs to user
+        cursor.execute("""
+            SELECT id FROM database_connections 
+            WHERE id = %s AND user_id = %s
+        """, (connection_id, current_user.id))
+        
+        if not cursor.fetchone():
+            raise HTTPException(status_code=404, detail="Connection not found")
+        
+        # Build dynamic update query
+        update_fields = []
+        values = []
+        
+        if connection_update.name is not None:
+            update_fields.append("name = %s")
+            values.append(connection_update.name)
+        if connection_update.description is not None:
+            update_fields.append("description = %s")
+            values.append(connection_update.description)
+        if connection_update.host is not None:
+            update_fields.append("host = %s")
+            values.append(connection_update.host)
+        if connection_update.port is not None:
+            update_fields.append("port = %s")
+            values.append(connection_update.port)
+        if connection_update.database_name is not None:
+            update_fields.append("database_name = %s")
+            values.append(connection_update.database_name)
+        if connection_update.username is not None:
+            update_fields.append("username = %s")
+            values.append(connection_update.username)
+        if connection_update.password is not None:
+            encrypted_password = db_compare_service.encrypt_password(connection_update.password)
+            update_fields.append("password_encrypted = %s")
+            values.append(encrypted_password)
+        if connection_update.connection_type is not None:
+            update_fields.append("connection_type = %s")
+            values.append(connection_update.connection_type.value)
+        if connection_update.is_active is not None:
+            update_fields.append("is_active = %s")
+            values.append(connection_update.is_active)
+        
+        if not update_fields:
+            raise HTTPException(status_code=400, detail="No fields to update")
+        
+        values.append(connection_id)
+        
+        cursor.execute(f"""
+            UPDATE database_connections 
+            SET {', '.join(update_fields)}, updated_at = NOW()
+            WHERE id = %s
+            RETURNING id, name, description, host, port, database_name, username, 
+                     connection_type, is_active, created_at, updated_at, last_tested_at, 
+                     test_result, user_id
+        """, values)
+        
+        result = cursor.fetchone()
+        columns = [desc[0] for desc in cursor.description]
+        connection_dict = dict(zip(columns, result))
+        
+        conn.commit()
+        return connection_dict
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
+
+@app.delete("/api/database-connections/{connection_id}")
+async def delete_database_connection(
+    connection_id: int,
+    current_user: User = Depends(get_current_user)
+):
+    """Delete a database connection"""
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        
+        # Check if connection exists and belongs to user
+        cursor.execute("""
+            SELECT id FROM database_connections 
+            WHERE id = %s AND user_id = %s
+        """, (connection_id, current_user.id))
+        
+        if not cursor.fetchone():
+            raise HTTPException(status_code=404, detail="Connection not found")
+        
+        # Delete associated schema comparisons first
+        cursor.execute("""
+            DELETE FROM schema_comparisons 
+            WHERE connection_id = %s AND user_id = %s
+        """, (connection_id, current_user.id))
+        
+        # Delete the connection
+        cursor.execute("""
+            DELETE FROM database_connections 
+            WHERE id = %s AND user_id = %s
+        """, (connection_id, current_user.id))
+        
+        conn.commit()
+        return {"message": "Connection deleted successfully"}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
+
+@app.post("/api/database-connections/{connection_id}/test")
+async def test_database_connection(
+    connection_id: int,
+    current_user: User = Depends(get_current_user)
+):
+    """Test a database connection"""
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        
+        # Get connection details
+        cursor.execute("""
+            SELECT host, port, database_name, username, password_encrypted
+            FROM database_connections 
+            WHERE id = %s AND user_id = %s
+        """, (connection_id, current_user.id))
+        
+        result = cursor.fetchone()
+        if not result:
+            raise HTTPException(status_code=404, detail="Connection not found")
+        
+        host, port, db_name, username, encrypted_password = result
+        password = db_compare_service.decrypt_password(encrypted_password)
+        
+        # Test the connection
+        test_result = db_compare_service.test_connection(host, port, db_name, username, password)
+        
+        # Update test result in database
+        cursor.execute("""
+            UPDATE database_connections 
+            SET last_tested_at = NOW(), test_result = %s
+            WHERE id = %s
+        """, (test_result.message, connection_id))
+        
+        conn.commit()
+        return test_result
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
+
+@app.post("/api/database-connections/{connection_id}/compare")
+async def compare_database_schemas(
+    connection_id: int,
+    comparison: SchemaComparisonCreate,
+    current_user: User = Depends(get_current_user)
+):
+    """Compare local database schema with remote database"""
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        
+        # Get connection details
+        cursor.execute("""
+            SELECT host, port, database_name, username, password_encrypted
+            FROM database_connections 
+            WHERE id = %s AND user_id = %s
+        """, (connection_id, current_user.id))
+        
+        result = cursor.fetchone()
+        if not result:
+            raise HTTPException(status_code=404, detail="Connection not found")
+        
+        host, port, db_name, username, encrypted_password = result
+        password = db_compare_service.decrypt_password(encrypted_password)
+        
+        # Get local schema using actual DB config
+        from db import DB_CONFIG
+        local_schema = db_compare_service.get_database_schema(
+            DB_CONFIG['host'], 
+            int(DB_CONFIG['port']), 
+            DB_CONFIG['database'], 
+            DB_CONFIG['user'], 
+            DB_CONFIG['password']
+        )
+        
+        # Get remote schema
+        remote_schema = db_compare_service.get_database_schema(host, port, db_name, username, password)
+        
+        # Compare schemas
+        differences, migrations = db_compare_service.compare_schemas(local_schema, remote_schema)
+        
+        # Store comparison result
+        cursor.execute("""
+            INSERT INTO schema_comparisons 
+            (connection_id, comparison_type, local_schema, remote_schema, differences, suggested_migrations, user_id)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            RETURNING id, connection_id, comparison_type, local_schema, remote_schema, 
+                     differences, suggested_migrations, status, created_at, applied_at, 
+                     applied_by, error_message, user_id
+        """, (
+            connection_id, 
+            comparison.comparison_type.value,
+            json.dumps(local_schema.dict()),
+            json.dumps(remote_schema.dict()),
+            json.dumps([diff.dict() for diff in differences]),
+            json.dumps([mig.dict() for mig in migrations]),
+            current_user.id
+        ))
+        
+        result = cursor.fetchone()
+        columns = [desc[0] for desc in cursor.description]
+        comparison_dict = dict(zip(columns, result))
+        
+        conn.commit()
+        return comparison_dict
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
+
+@app.get("/api/schema-comparisons")
+async def get_schema_comparisons(current_user: User = Depends(get_current_user)):
+    """Get all schema comparisons for the current user"""
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT sc.*, dc.name as connection_name
+            FROM schema_comparisons sc
+            JOIN database_connections dc ON sc.connection_id = dc.id
+            WHERE sc.user_id = %s 
+            ORDER BY sc.created_at DESC
+        """, (current_user.id,))
+        
+        comparisons = []
+        columns = [desc[0] for desc in cursor.description]
+        for row in cursor.fetchall():
+            comp_dict = dict(zip(columns, row))
+            comparisons.append(comp_dict)
+        
+        return comparisons
+    finally:
+        conn.close()
+
+@app.delete("/api/schema-comparisons/{comparison_id}")
+async def delete_schema_comparison(
+    comparison_id: int,
+    current_user: User = Depends(get_current_user)
+):
+    """Delete a schema comparison"""
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        
+        # Check if comparison exists and belongs to user
+        cursor.execute("""
+            SELECT id FROM schema_comparisons 
+            WHERE id = %s AND user_id = %s
+        """, (comparison_id, current_user.id))
+        
+        if not cursor.fetchone():
+            raise HTTPException(status_code=404, detail="Comparison not found")
+        
+        # Delete the comparison
+        cursor.execute("""
+            DELETE FROM schema_comparisons 
+            WHERE id = %s AND user_id = %s
+        """, (comparison_id, current_user.id))
+        
+        conn.commit()
+        return {"message": "Comparison deleted successfully"}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
+
+@app.post("/api/schema-comparisons/{comparison_id}/apply")
+async def apply_migrations(
+    comparison_id: int,
+    request: ApplyMigrationsRequest,
+    current_user: User = Depends(get_current_user)
+):
+    """Apply selected migrations to remote database"""
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        
+        # Get comparison and connection details
+        cursor.execute("""
+            SELECT sc.suggested_migrations, dc.host, dc.port, dc.database_name, 
+                   dc.username, dc.password_encrypted
+            FROM schema_comparisons sc
+            JOIN database_connections dc ON sc.connection_id = dc.id
+            WHERE sc.id = %s AND sc.user_id = %s
+        """, (comparison_id, current_user.id))
+        
+        result = cursor.fetchone()
+        if not result:
+            raise HTTPException(status_code=404, detail="Comparison not found")
+        
+        migrations_json, host, port, db_name, username, encrypted_password = result
+        # migrations_json is already parsed by PostgreSQL JSON type, no need for json.loads()
+        migrations = migrations_json if isinstance(migrations_json, list) else json.loads(migrations_json)
+        password = db_compare_service.decrypt_password(encrypted_password)
+        
+        # Connect to remote database
+        remote_conn = psycopg2.connect(
+            host=host, port=port, database=db_name, user=username, password=password
+        )
+        
+        applied_migrations = []
+        errors = []
+        
+        try:
+            remote_cursor = remote_conn.cursor()
+            
+            # Apply selected migrations
+            for index in request.migration_indices:
+                if index < len(migrations):
+                    migration = migrations[index]
+                    try:
+                        remote_cursor.execute(migration['sql'])
+                        applied_migrations.append(migration)
+                    except Exception as e:
+                        errors.append(f"Migration {index}: {str(e)}")
+                        remote_conn.rollback()
+                        break
+            
+            if not errors:
+                remote_conn.commit()
+                
+                # Update comparison status
+                cursor.execute("""
+                    UPDATE schema_comparisons 
+                    SET status = 'applied', applied_at = NOW(), applied_by = %s
+                    WHERE id = %s
+                """, (current_user.id, comparison_id))
+                conn.commit()
+                
+        finally:
+            remote_conn.close()
+        
+        return {
+            "applied_migrations": applied_migrations,
+            "errors": errors,
+            "success": len(errors) == 0
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        conn.rollback()
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         conn.close()

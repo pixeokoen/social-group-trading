@@ -126,7 +126,7 @@ class Trade(TradeBase):
     take_profit: Optional[Decimal] = None
     pnl: Optional[Decimal] = None
     floating_pnl: Optional[Decimal] = None
-    status: Literal["pending", "filled", "closed", "cancelled"] = "pending"
+    status: Literal["pending", "open", "closed", "cancelled", "filled"] = "pending"
     created_at: datetime
     opened_at: Optional[datetime] = None
     closed_at: Optional[datetime] = None
@@ -134,6 +134,12 @@ class Trade(TradeBase):
     broker_fill_price: Optional[Decimal] = None
     close_reason: Optional[str] = None
     link_group_id: Optional[str] = None
+    
+    # Take profit and stop loss levels from separate tables
+    take_profit_levels: Optional[List[Dict[str, Any]]] = []
+    stop_loss_status: Optional[str] = None
+    stop_loss_executed_at: Optional[datetime] = None
+    stop_loss_executed_price: Optional[Decimal] = None
     
     class Config:
         from_attributes = True
@@ -229,4 +235,91 @@ class SourceAccountMapping(BaseModel):
     account_type: Optional[str] = None
     
     class Config:
-        from_attributes = True 
+        from_attributes = True
+
+# Database Compare models
+from enum import Enum
+
+class ConnectionType(str, Enum):
+    postgresql = "postgresql"
+    mysql = "mysql"
+    sqlite = "sqlite"
+
+class ComparisonType(str, Enum):
+    full = "full"
+    tables = "tables"
+    columns = "columns"
+    indexes = "indexes"
+
+class ComparisonStatus(str, Enum):
+    pending = "pending"
+    reviewed = "reviewed"
+    applied = "applied"
+    failed = "failed"
+
+class DatabaseConnectionCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=255)
+    description: Optional[str] = None
+    host: str = Field(..., min_length=1, max_length=255)
+    port: int = Field(default=5432, ge=1, le=65535)
+    database_name: str = Field(..., min_length=1, max_length=255)
+    username: str = Field(..., min_length=1, max_length=255)
+    password: str = Field(..., min_length=1)
+    connection_type: ConnectionType = ConnectionType.postgresql
+    is_active: bool = True
+
+class DatabaseConnectionUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=255)
+    description: Optional[str] = None
+    host: Optional[str] = Field(None, min_length=1, max_length=255)
+    port: Optional[int] = Field(None, ge=1, le=65535)
+    database_name: Optional[str] = Field(None, min_length=1, max_length=255)
+    username: Optional[str] = Field(None, min_length=1, max_length=255)
+    password: Optional[str] = Field(None, min_length=1)
+    connection_type: Optional[ConnectionType] = None
+    is_active: Optional[bool] = None
+
+class TestConnectionResult(BaseModel):
+    success: bool
+    message: str
+    connection_time_ms: Optional[float] = None
+    server_version: Optional[str] = None
+    error_details: Optional[str] = None
+
+class SchemaComparisonCreate(BaseModel):
+    connection_id: int
+    comparison_type: ComparisonType = ComparisonType.full
+
+class ApplyMigrationsRequest(BaseModel):
+    migration_indices: List[int]  # Which migrations to apply (by index)
+    confirm_destructive: bool = False  # Must be true for destructive operations
+
+class TableSchema(BaseModel):
+    table_name: str
+    schema_name: str = "public"
+    columns: List[Dict[str, Any]]
+    indexes: List[Dict[str, Any]]
+    constraints: List[Dict[str, Any]]
+    triggers: List[Dict[str, Any]] = []
+
+class DatabaseSchema(BaseModel):
+    tables: List[TableSchema]
+    functions: List[Dict[str, Any]] = []
+    views: List[Dict[str, Any]] = []
+    sequences: List[Dict[str, Any]] = []
+
+class SchemaDifference(BaseModel):
+    type: str  # 'missing_table', 'missing_column', 'different_type', 'missing_index', etc.
+    table_name: Optional[str] = None
+    column_name: Optional[str] = None
+    local_value: Optional[Any] = None
+    remote_value: Optional[Any] = None
+    description: str
+    severity: str  # 'high', 'medium', 'low'
+
+class MigrationSuggestion(BaseModel):
+    action: str  # 'CREATE TABLE', 'ADD COLUMN', 'ALTER COLUMN', 'CREATE INDEX', etc.
+    sql: str
+    description: str
+    risk_level: str  # 'high', 'medium', 'low'
+    dependencies: List[str] = []  # Other migrations this depends on 

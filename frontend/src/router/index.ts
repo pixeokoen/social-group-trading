@@ -50,6 +50,18 @@ const router = createRouter({
       meta: { requiresAuth: true }
     },
     {
+      path: '/script-manager',
+      name: 'script-manager',
+      component: () => import('../views/ScriptManagerView.vue'),
+      meta: { requiresAuth: true }
+    },
+    {
+      path: '/database-compare',
+      name: 'database-compare',
+      component: () => import('../views/DatabaseCompareView.vue'),
+      meta: { requiresAuth: true }
+    },
+    {
       path: '/settings',
       name: 'settings',
       component: () => import('../views/SettingsView.vue'),
