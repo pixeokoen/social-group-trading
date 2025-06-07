@@ -268,7 +268,7 @@
                 class="opacity-90"
               />
               <circle
-                v-if="!connector.endDot.hidden"
+                v-if="connector.endDot && !connector.endDot.hidden"
                 :cx="connector.endDot.x"
                 :cy="connector.endDot.y"
                 r="3.5"
@@ -276,17 +276,6 @@
                 stroke-width="2"
                 fill="white"
                 class="opacity-90"
-              />
-              <!-- Small junction dots (where branches meet trunk) -->
-              <circle
-                v-for="(junction, jIndex) in connector.junctionDots || []"
-                :key="`junction-${index}-${jIndex}`"
-                :cx="junction.x"
-                :cy="junction.y"
-                r="2"
-                :fill="connector.color"
-                stroke="none"
-                class="opacity-95"
               />
               <!-- Small junction dots (where branches meet trunk) -->
               <circle
@@ -1231,8 +1220,8 @@ const connectors = computed(() => {
 
       if (positions.length >= 2) {
         // Circuit board connector positioning
-        const baseTrunkDistance = 30
-        const trunkOffsetIncrement = 20
+        const baseTrunkDistance = 10
+        const trunkOffsetIncrement = 10
         const trunkX = positions[0].tableBorderX - baseTrunkDistance - (groupIndex * trunkOffsetIncrement)
         
         const junctionDots: Array<{ x: number, y: number }> = []
@@ -1279,7 +1268,7 @@ const connectors = computed(() => {
               path: branchPath,
               color,
               startDot: { x: pos.tableBorderX, y: pos.y },
-              endDot: { x: trunkX, y: pos.y, hidden: true }, junctionDots: [],
+              endDot: { x: trunkX, y: pos.y, hidden: true },
               groupIndex
             })
           })
