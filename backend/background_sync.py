@@ -68,7 +68,7 @@ async def sync_account_trades(account_id: int, api_key: str, api_secret: str, ac
                         # Update trade with fill information
                         cursor.execute("""
                             UPDATE trades 
-                            SET status = 'open',
+                            SET status = 'closed',
                                 broker_fill_price = %s,
                                 entry_price = %s,
                                 opened_at = %s
@@ -87,7 +87,7 @@ async def sync_account_trades(account_id: int, api_key: str, api_secret: str, ac
                         filled_qty = order_status.get('filled_qty', 0)
                         cursor.execute("""
                             UPDATE trades 
-                            SET status = 'open',
+                            SET status = 'closed',
                                 broker_fill_price = %s,
                                 entry_price = %s,
                                 quantity = %s,

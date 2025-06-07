@@ -4,7 +4,7 @@
 
 ### 1. Backend Server
 ```bash
-python -m venv venv
+#python -m venv venv
 .\venv\Scripts\activate
 cd backend
 python main.py

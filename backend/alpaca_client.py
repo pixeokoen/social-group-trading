@@ -309,6 +309,40 @@ class AlpacaClient:
             print(f"Error getting market data for {symbol}: {e}")
             return {}
     
+    async def get_current_prices(self, symbols: List[str]) -> Dict[str, float]:
+        """Get current prices for multiple symbols"""
+        prices = {}
+        for symbol in symbols:
+            try:
+                market_data = await self.get_market_data(symbol)
+                if market_data:
+                    # Try 'last' price first (most recent trade)
+                    current_price = market_data.get('last')
+                    if current_price and current_price > 0:
+                        prices[symbol] = float(current_price)
+                    else:
+                        # Fallback to bid/ask midpoint
+                        bid = market_data.get('bid')
+                        ask = market_data.get('ask')
+                        if bid and ask and bid > 0 and ask > 0:
+                            prices[symbol] = float((bid + ask) / 2)
+            except Exception as e:
+                print(f"Error getting price for {symbol}: {e}")
+                continue
+        return prices
+    
+    async def get_latest_price(self, symbol: str) -> Optional[Dict[str, Any]]:
+        """Get latest price for a single symbol (for compatibility)"""
+        try:
+            market_data = await self.get_market_data(symbol)
+            if market_data:
+                price = market_data.get('last')
+                if price and price > 0:
+                    return {'price': float(price)}
+        except Exception as e:
+            print(f"Error getting latest price for {symbol}: {e}")
+        return None
+
     async def get_account_summary(self) -> Dict[str, Any]:
         """Get account summary including buying power"""
         account_info = await self.get_account_info()

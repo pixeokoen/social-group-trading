@@ -55,123 +55,121 @@
         </div>
       </div>
       
-      <!-- Trading Overview -->
-      <div class="mt-8 grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-5">
-        <!-- Total Trades -->
-        <div class="bg-white overflow-hidden shadow rounded-lg">
-          <div class="px-4 py-5 sm:p-6">
-            <dt class="text-sm font-medium text-gray-500 truncate">Total Trades</dt>
-            <dd class="mt-1 text-3xl font-semibold text-gray-900">{{ analytics.total_trades || 0 }}</dd>
-            <dd class="mt-1 text-sm text-gray-500">
-              {{ analytics.open_trades || 0 }} open, {{ analytics.pending_trades || 0 }} pending
-            </dd>
-          </div>
-        </div>
-        
-        <!-- Win Rate -->
-        <div class="bg-white overflow-hidden shadow rounded-lg">
-          <div class="px-4 py-5 sm:p-6">
-            <dt class="text-sm font-medium text-gray-500 truncate">Win Rate</dt>
-            <dd class="mt-1 text-3xl font-semibold text-gray-900">{{ formatPercentage(analytics.win_rate) }}</dd>
-            <dd class="mt-1 text-sm text-gray-500">
-              {{ analytics.winning_trades || 0 }}W / {{ analytics.losing_trades || 0 }}L
-            </dd>
-          </div>
-        </div>
-        
-        <!-- Realized P&L -->
-        <div class="bg-white overflow-hidden shadow rounded-lg">
-          <div class="px-4 py-5 sm:p-6">
-            <dt class="text-sm font-medium text-gray-500 truncate">Realized P&L</dt>
-            <dd :class="[
-              'mt-1 text-3xl font-semibold',
-              analytics.realized_pnl >= 0 ? 'text-green-600' : 'text-red-600'
+      <!-- Hero Metrics Section -->
+      <div class="mt-10 relative">
+        <!-- Background element -->
+        <div class="absolute inset-0 bg-gradient-to-br from-slate-50 to-gray-100 rounded-xl transform rotate-1 opacity-40"></div>
+        <div class="relative bg-white rounded-xl p-6 shadow-xl border border-gray-200/50">
+          
+          <!-- Core Metrics Grid -->
+          <div class="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-4">
+            
+            <!-- Total Trades -->
+            <div class="group relative bg-gradient-to-br from-slate-50 to-slate-100 rounded-lg p-5 hover:shadow-md transition-all duration-200 border border-slate-200">
+              <div class="flex items-center mb-3">
+                <div class="p-2 bg-slate-600 rounded-md mr-3">
+                  <svg class="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"></path>
+                  </svg>
+                </div>
+                <dt class="text-sm font-semibold text-slate-600 uppercase tracking-wide">Total Trades</dt>
+              </div>
+              <dd class="text-2xl font-bold text-slate-900 mb-1">{{ analytics.total_trades || 0 }}</dd>
+              <dd class="text-sm text-slate-500 font-medium">
+                {{ analytics.open_trades || 0 }} open · {{ analytics.pending_trades || 0 }} pending
+              </dd>
+            </div>
+            
+            <!-- Win Rate -->
+            <div class="group relative bg-gradient-to-br from-emerald-50 to-teal-100 rounded-lg p-5 hover:shadow-md transition-all duration-200 border border-emerald-200">
+              <div class="flex items-center mb-3">
+                <div class="p-2 bg-emerald-600 rounded-md mr-3">
+                  <svg class="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                  </svg>
+                </div>
+                <dt class="text-sm font-semibold text-emerald-700 uppercase tracking-wide">Win Rate</dt>
+              </div>
+              <dd class="text-2xl font-bold text-emerald-900 mb-1">{{ formatPercentage(analytics.win_rate) }}</dd>
+              <dd class="text-sm text-emerald-600 font-medium">
+                {{ analytics.winning_trades || 0 }}W · {{ analytics.losing_trades || 0 }}L
+              </dd>
+            </div>
+            
+            <!-- Realized P&L -->
+            <div :class="[
+              'group relative rounded-lg p-5 hover:shadow-md transition-all duration-200 border',
+              analytics.realized_pnl >= 0 
+                ? 'bg-gradient-to-br from-green-50 to-emerald-100 border-green-200' 
+                : 'bg-gradient-to-br from-red-50 to-rose-100 border-red-200'
             ]">
-              ${{ formatNumber(analytics.realized_pnl) }}
-            </dd>
-            <dd class="mt-1 text-sm text-gray-500">
-              Last updated: {{ analytics.realized_pnl_updated_at ? new Date(analytics.realized_pnl_updated_at).toLocaleString() : 'Never' }}
-            </dd>
-          </div>
-        </div>
-        
-        <!-- Floating P&L -->
-        <div class="bg-white overflow-hidden shadow rounded-lg">
-          <div class="px-4 py-5 sm:p-6">
-            <dt class="text-sm font-medium text-gray-500 truncate">Floating P&L</dt>
-            <dd :class="[
-              'mt-1 text-3xl font-semibold',
-              analytics.total_floating_pnl >= 0 ? 'text-green-600' : 'text-red-600'
+              <div class="flex items-center mb-3">
+                <div :class="[
+                  'p-2 rounded-md mr-3',
+                  analytics.realized_pnl >= 0 ? 'bg-green-600' : 'bg-red-600'
+                ]">
+                  <svg class="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1"></path>
+                  </svg>
+                </div>
+                <dt :class="[
+                  'text-sm font-semibold uppercase tracking-wide',
+                  analytics.realized_pnl >= 0 ? 'text-green-700' : 'text-red-700'
+                ]">Realized P&L</dt>
+              </div>
+              <dd :class="[
+                'text-2xl font-bold mb-1',
+                analytics.realized_pnl >= 0 ? 'text-green-900' : 'text-red-900'
+              ]">
+                ${{ formatNumber(analytics.realized_pnl) }}
+              </dd>
+              <dd :class="[
+                'text-sm font-medium',
+                analytics.realized_pnl >= 0 ? 'text-green-600' : 'text-red-600'
+              ]">
+                Closed positions
+              </dd>
+            </div>
+            
+            <!-- Floating P&L -->
+            <div :class="[
+              'group relative rounded-lg p-5 hover:shadow-md transition-all duration-200 border',
+              analytics.floating_pnl >= 0 
+                ? 'bg-gradient-to-br from-blue-50 to-indigo-100 border-blue-200' 
+                : 'bg-gradient-to-br from-orange-50 to-red-100 border-orange-200'
             ]">
-              {{ analytics.total_floating_pnl < 0 ? '-' : '' }}${{ formatNumber(Math.abs(analytics.total_floating_pnl)) }}
-            </dd>
-            <dd class="mt-1 text-sm text-gray-500">
-              Open positions
-            </dd>
+              <div class="flex items-center mb-3">
+                <div :class="[
+                  'p-2 rounded-md mr-3',
+                  analytics.floating_pnl >= 0 ? 'bg-blue-600' : 'bg-orange-600'
+                ]">
+                  <svg class="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"></path>
+                  </svg>
+                </div>
+                <dt :class="[
+                  'text-sm font-semibold uppercase tracking-wide',
+                  analytics.floating_pnl >= 0 ? 'text-blue-700' : 'text-orange-700'
+                ]">Floating P&L</dt>
+              </div>
+              <dd :class="[
+                'text-2xl font-bold mb-1',
+                analytics.floating_pnl >= 0 ? 'text-blue-900' : 'text-orange-900'
+              ]">
+                {{ isNaN(analytics.floating_pnl) ? '$0.00' : (analytics.floating_pnl < 0 ? '-' : '') + '$' + formatNumber(Math.abs(analytics.floating_pnl || 0)) }}
+              </dd>
+              <dd :class="[
+                'text-sm font-medium',
+                analytics.floating_pnl >= 0 ? 'text-blue-600' : 'text-orange-600'
+              ]">
+                Open positions
+              </dd>
+            </div>
+            
           </div>
-        </div>
-        
-        <!-- Pending Signals -->
-        <div class="bg-white overflow-hidden shadow rounded-lg">
-          <div class="px-4 py-5 sm:p-6">
-            <dt class="text-sm font-medium text-gray-500 truncate">Pending Signals</dt>
-            <dd class="mt-1 text-3xl font-semibold text-yellow-600">{{ analytics.pending_signals || 0 }}</dd>
-            <dd class="mt-1 text-sm text-gray-500">
-              Waiting for approval
-            </dd>
-          </div>
-        </div>
-      </div>
-      
-      <!-- Signal Statistics -->
-      <div class="mt-8 grid grid-cols-1 gap-5 sm:grid-cols-3">
-        <div class="bg-white overflow-hidden shadow rounded-lg">
-          <div class="px-4 py-5 sm:p-6">
-            <dt class="text-sm font-medium text-gray-500 truncate">Total Signals</dt>
-            <dd class="mt-1 text-2xl font-semibold text-gray-900">{{ analytics.total_signals || 0 }}</dd>
-          </div>
-        </div>
-        
-        <div class="bg-white overflow-hidden shadow rounded-lg">
-          <div class="px-4 py-5 sm:p-6">
-            <dt class="text-sm font-medium text-gray-500 truncate">Approved</dt>
-            <dd class="mt-1 text-2xl font-semibold text-green-600">{{ analytics.approved_signals || 0 }}</dd>
-          </div>
-        </div>
-        
-        <div class="bg-white overflow-hidden shadow rounded-lg">
-          <div class="px-4 py-5 sm:p-6">
-            <dt class="text-sm font-medium text-gray-500 truncate">Executed</dt>
-            <dd class="mt-1 text-2xl font-semibold text-blue-600">{{ analytics.executed_signals || 0 }}</dd>
-          </div>
-        </div>
-      </div>
-
-      <!-- Recent Signals -->
-      <div class="mt-8">
-        <h2 class="text-lg leading-6 font-medium text-gray-900 mb-4">Recent Signals</h2>
-        <SignalList :signals="recentSignals" @execute="executeSignal" />
-      </div>
-
-      <!-- Recent Trades -->
-      <div class="mt-8">
-        <h2 class="text-lg leading-6 font-medium text-gray-900 mb-4">Recent Trades</h2>
-        <div v-if="recentTrades.length > 0">
-          <TradeList :trades="recentTrades" @close="openCloseTradeModal" />
-        </div>
-        <div v-else class="bg-white shadow rounded-lg p-6 text-center text-gray-500">
-          No trades yet for this account
         </div>
       </div>
     </div>
-    
-    <!-- Order Confirmation Modal for closing trades -->
-    <OrderConfirmModal
-      :signal="selectedTrade"
-      :is-open="showCloseModal"
-      @close="closeModal"
-      @executed="onTradeExecuted"
-    />
 
     <!-- Sync Log Modal -->
     <div v-if="showSyncLogModal" class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-40">
@@ -228,14 +226,7 @@ interface Analytics {
   total_pnl: number
   avg_pnl: number
   win_rate: number
-  total_floating_pnl: number
-  
-  // Signal statistics
-  total_signals: number
-  pending_signals: number
-  approved_signals: number
-  rejected_signals: number
-  executed_signals: number
+  floating_pnl: number  // Changed from total_floating_pnl
   
   // Account info
   active_account: string
@@ -259,14 +250,7 @@ const analytics = ref<Analytics>({
   total_pnl: 0,
   avg_pnl: 0,
   win_rate: 0,
-  total_floating_pnl: 0,
-  
-  // Signal statistics
-  total_signals: 0,
-  pending_signals: 0,
-  approved_signals: 0,
-  rejected_signals: 0,
-  executed_signals: 0,
+  floating_pnl: 0,
   
   // Account info
   active_account: '',

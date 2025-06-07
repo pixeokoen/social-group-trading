@@ -56,7 +56,7 @@ class AlpacaStreamHandler:
                     # Order fully filled
                     cursor.execute("""
                         UPDATE trades 
-                        SET status = 'open',
+                        SET status = 'closed',
                             broker_fill_price = %s,
                             entry_price = %s,
                             opened_at = %s,
@@ -75,7 +75,7 @@ class AlpacaStreamHandler:
                     # Order partially filled
                     cursor.execute("""
                         UPDATE trades 
-                        SET status = 'open',
+                        SET status = 'closed',
                             broker_fill_price = %s,
                             entry_price = %s,
                             quantity = %s
