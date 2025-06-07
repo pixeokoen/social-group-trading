@@ -257,19 +257,47 @@
                 fill="none"
                 class="opacity-80"
               />
+              <!-- Hollow endpoint circles (on table border) -->
               <circle
                 :cx="connector.startDot.x"
                 :cy="connector.startDot.y"
-                r="4"
-                :fill="connector.color"
+                r="3.5"
+                :stroke="connector.color"
+                stroke-width="2"
+                fill="white"
                 class="opacity-90"
               />
               <circle
+                v-if="!connector.endDot.hidden"
                 :cx="connector.endDot.x"
                 :cy="connector.endDot.y"
-                r="4"
-                :fill="connector.color"
+                r="3.5"
+                :stroke="connector.color"
+                stroke-width="2"
+                fill="white"
                 class="opacity-90"
+              />
+              <!-- Small junction dots (where branches meet trunk) -->
+              <circle
+                v-for="(junction, jIndex) in connector.junctionDots || []"
+                :key="`junction-${index}-${jIndex}`"
+                :cx="junction.x"
+                :cy="junction.y"
+                r="2"
+                :fill="connector.color"
+                stroke="none"
+                class="opacity-95"
+              />
+              <!-- Small junction dots (where branches meet trunk) -->
+              <circle
+                v-for="(junction, jIndex) in connector.junctionDots || []"
+                :key="`junction-${index}-${jIndex}`"
+                :cx="junction.x"
+                :cy="junction.y"
+                r="2"
+                :fill="connector.color"
+                stroke="none"
+                class="opacity-95"
               />
             </g>
           </svg>
@@ -1153,7 +1181,9 @@ const connectors = computed(() => {
     path: string
     color: string
     startDot: { x: number, y: number }
-    endDot: { x: number, y: number }
+    endDot: { x: number, y: number, hidden?: boolean }
+    junctionDots?: Array<{ x: number, y: number }>
+    groupIndex: number
   }> = []
 
   // Group trades by link_group_id
@@ -1178,38 +1208,80 @@ const connectors = computed(() => {
         return aIndex - bIndex
       })
 
-      // Create connector for first and last trade in the group
-      const firstTrade = sortedTrades[0]
-      const lastTrade = sortedTrades[sortedTrades.length - 1]
+      // Get positions for all trades in group
+      const positions: Array<{ trade: Trade, tableBorderX: number, y: number }> = []
       
-      const firstRef = tradeRefs.value[firstTrade.id]
-      const lastRef = tradeRefs.value[lastTrade.id]
-      
-      if (firstRef && lastRef) {
-        const firstRect = firstRef.getBoundingClientRect()
-        const lastRect = lastRef.getBoundingClientRect()
-        const svgRect = connectorSvg.value?.getBoundingClientRect()
-        
-        // Find the table element to get its exact left border position
-        const tableElement = firstRef.closest('table')
-        
-        if (svgRect && tableElement) {
-          const tableRect = tableElement.getBoundingClientRect()
-          const startY = firstRect.top - svgRect.top + firstRect.height / 2
-          const endY = lastRect.top - svgRect.top + lastRect.height / 2
+      sortedTrades.forEach(trade => {
+        const ref = tradeRefs.value[trade.id]
+        if (ref) {
+          const rect = ref.getBoundingClientRect()
+          const svgRect = connectorSvg.value?.getBoundingClientRect()
+          const tableElement = ref.closest('table')
           
-          // Calculate exact position of table's left border relative to SVG coordinate system
-          const x = tableRect.left - svgRect.left
-          
-          // Create smooth curve path that flows to the left
-          const controlPointOffset = Math.abs(endY - startY) * 0.3
-          const path = `M ${x},${startY} C ${x - controlPointOffset},${startY} ${x - controlPointOffset},${endY} ${x},${endY}`
+          if (svgRect && tableElement) {
+            const tableRect = tableElement.getBoundingClientRect()
+            positions.push({
+              trade,
+              tableBorderX: tableRect.left - svgRect.left,
+              y: rect.top - svgRect.top + rect.height / 2
+            })
+          }
+        }
+      })
+
+      if (positions.length >= 2) {
+        // Circuit board connector positioning
+        const baseTrunkDistance = 30
+        const trunkOffsetIncrement = 20
+        const trunkX = positions[0].tableBorderX - baseTrunkDistance - (groupIndex * trunkOffsetIncrement)
+        
+        const junctionDots: Array<{ x: number, y: number }> = []
+
+        if (positions.length === 2) {
+          // Direct connection for 2 trades
+          const [first, last] = positions
+          const path = `M ${first.tableBorderX},${first.y} L ${trunkX + 5},${first.y} Q ${trunkX},${first.y} ${trunkX},${first.y + 5} L ${trunkX},${last.y - 5} Q ${trunkX},${last.y} ${trunkX + 5},${last.y} L ${last.tableBorderX},${last.y}`
           
           connectorList.push({
             path,
-            color: '#3B82F6', // Use blue color for all connectors
-            startDot: { x, y: startY },
-            endDot: { x, y: endY }
+            color,
+            startDot: { x: first.tableBorderX, y: first.y },
+            endDot: { x: last.tableBorderX, y: last.y },
+            junctionDots,
+            groupIndex
+          })
+        } else {
+          // Circuit board branching for 3+ trades
+          const firstPos = positions[0]
+          const lastPos = positions[positions.length - 1]
+          const middleTrades = positions.slice(1, -1)
+
+          // Main trunk connector (first to last)
+          const trunkPath = `M ${firstPos.tableBorderX},${firstPos.y} L ${trunkX + 5},${firstPos.y} Q ${trunkX},${firstPos.y} ${trunkX},${firstPos.y + 5} L ${trunkX},${lastPos.y - 5} Q ${trunkX},${lastPos.y} ${trunkX + 5},${lastPos.y} L ${lastPos.tableBorderX},${lastPos.y}`
+          
+          connectorList.push({
+            path: trunkPath,
+            color,
+            startDot: { x: firstPos.tableBorderX, y: firstPos.y },
+            endDot: { x: lastPos.tableBorderX, y: lastPos.y },
+            junctionDots,
+            groupIndex
+          })
+
+          // Branch lines for middle trades (sidelines to trunk)
+          middleTrades.forEach(pos => {
+            const branchPath = `M ${pos.tableBorderX},${pos.y} L ${trunkX + 5},${pos.y} Q ${trunkX},${pos.y} ${trunkX},${pos.y}`
+            
+            // Add junction dot where branch meets trunk
+            junctionDots.push({ x: trunkX, y: pos.y })
+            
+            connectorList.push({
+              path: branchPath,
+              color,
+              startDot: { x: pos.tableBorderX, y: pos.y },
+              endDot: { x: trunkX, y: pos.y, hidden: true }, junctionDots: [],
+              groupIndex
+            })
           })
         }
       }
